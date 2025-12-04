@@ -1,6 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# FILE 6: position_tracker.py (300 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 """
 Position Tracker: Track active positions & monitor exit conditions
@@ -202,3 +199,4 @@ class PositionTracker:
             'hold_time_min': self.active_position.get_hold_time_minutes(),
             'is_active': self.active_position.is_active
         }
+
