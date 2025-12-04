@@ -1,6 +1,3 @@
- ═══════════════════════════════════════════════════════════════════════════════
-# FILE 4: analyzers.py (350 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 """
 Market Analyzers: OI, Volume, Technical, Market Structure
@@ -294,3 +291,4 @@ class MarketAnalyzer:
             return "BEARISH"
         else:
             return "NEUTRAL"
+
