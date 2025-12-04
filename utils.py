@@ -1,5 +1,3 @@
-FILE 2: utils.py (200 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 """
 Utilities: Logging, Time Helpers, Validators
@@ -153,3 +151,4 @@ def validate_candle_data(df, min_candles=10):
         return False
     
     return True
+
