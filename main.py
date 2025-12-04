@@ -1,9 +1,3 @@
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# FILE 8: main.py (200 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 """
 NIFTY Trading Bot - Main Orchestrator
 Complete autonomous trading signal generator with exit alerts
@@ -257,4 +251,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
