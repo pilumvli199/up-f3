@@ -1,7 +1,4 @@
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FILE 5: signal_engine.py (400 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 """
 Signal Engine: Entry Signal Generation & Validation
@@ -310,3 +307,4 @@ class SignalValidator:
         
         elapsed = (datetime.now(IST) - self.last_signal_time).total_seconds()
         return max(0, int(SIGNAL_COOLDOWN_SECONDS - elapsed))
+
