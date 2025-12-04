@@ -1,7 +1,3 @@
-═══════════════════════════════════════════════════════════════════════════════
-# FILE 1: config.py (150 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 """
 Configuration & Settings
 All constants, thresholds, and instrument logic
@@ -116,3 +112,4 @@ def get_strike_range(atm_strike, num_strikes=2):
     min_strike = atm_strike - (num_strikes * STRIKE_GAP)
     max_strike = atm_strike + (num_strikes * STRIKE_GAP)
     return min_strike, max_strike
+
