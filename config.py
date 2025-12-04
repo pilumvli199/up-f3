@@ -1,17 +1,19 @@
 """
 Configuration & Settings
 All constants, thresholds, and instrument logic
+FIXED: API URLs updated to December 2025 specs
 """
-
 import os
 from datetime import datetime, timedelta, time
 
 # ==================== API Configuration ====================
 API_VERSION = 'v3'
 UPSTOX_BASE_URL = 'https://api.upstox.com'
-UPSTOX_QUOTE_URL_V3 = f'{UPSTOX_BASE_URL}/v3/quote'
-UPSTOX_HISTORICAL_URL_V3 = f'{UPSTOX_BASE_URL}/v3/historical-candle'
-UPSTOX_OPTION_CHAIN_URL = f'{UPSTOX_BASE_URL}/v2/option/chain'
+
+# FIXED: Updated endpoint URLs for V3
+UPSTOX_QUOTE_URL_V3 = f'{UPSTOX_BASE_URL}/v3/market-quote/ltp'  # Changed from /v3/quote
+UPSTOX_HISTORICAL_URL_V3 = f'{UPSTOX_BASE_URL}/v3/historical-candle/intraday'  # Changed format
+UPSTOX_OPTION_CHAIN_URL = f'{UPSTOX_BASE_URL}/v2/option/chain'  # V2 still active
 
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', '')
 
@@ -72,8 +74,10 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
 # ==================== NIFTY Instrument Config ====================
-NIFTY_SPOT_KEY = "NSE_INDEX|Nifty 50"
-NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"
+# FIXED: Correct format for Upstox API
+NIFTY_SPOT_KEY = "NSE_INDEX|Nifty 50"  # With space - correct format
+NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"  # With space - correct format
+
 STRIKE_GAP = 50
 LOT_SIZE = 50
 ATR_FALLBACK = 30
@@ -112,4 +116,3 @@ def get_strike_range(atm_strike, num_strikes=2):
     min_strike = atm_strike - (num_strikes * STRIKE_GAP)
     max_strike = atm_strike + (num_strikes * STRIKE_GAP)
     return min_strike, max_strike
-
