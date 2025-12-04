@@ -1,7 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# FILE 7: alerts.py (250 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 """
 Alerts: Telegram Bot & Message Formatting
 """
@@ -201,3 +197,4 @@ Unrealized P&L: ₹{unrealized_pl:+.2f} ({unrealized_pct:+.1f}%)
 Hold Time: {position.get_hold_time_minutes():.0f} min
 """
         return msg
+
