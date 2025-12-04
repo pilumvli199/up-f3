@@ -1,7 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# FILE 3: data_manager.py (400 lines)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 """
 Data Manager: Upstox API + Redis Memory
 Handles all data fetching and OI storage
@@ -356,3 +352,4 @@ class DataFetcher:
         except Exception as e:
             logger.error(f"Option chain fetch error: {e}")
             return None
+
