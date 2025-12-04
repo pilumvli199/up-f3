@@ -1,0 +1,23 @@
+# NIFTY Trading Bot Dependencies
+
+# Async HTTP
+aiohttp==3.9.1
+
+# Redis (optional, falls back to RAM)
+redis==5.0.1
+
+# Data Processing
+pandas==2.1.4
+numpy==1.26.2
+
+# Timezone
+pytz==2023.3
+
+# Telegram (optional)
+python-telegram-bot==20.7
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# Logging
+colorlog==6.8.0
