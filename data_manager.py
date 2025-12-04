@@ -1,8 +1,8 @@
 """
 Data Manager: Upstox API + Redis Memory
 Handles all data fetching and OI storage
+FIXED: API endpoints updated to match December 2025 Upstox API V3 specs
 """
-
 import asyncio
 import aiohttp
 import json
@@ -25,7 +25,7 @@ logger = setup_logger("data_manager")
 
 # ==================== Upstox Client ====================
 class UpstoxClient:
-    """Upstox API V3 Client"""
+    """Upstox API V3 Client - Updated for December 2025"""
     
     def __init__(self):
         self.session = None
@@ -65,7 +65,8 @@ class UpstoxClient:
                         await asyncio.sleep(2 ** attempt)
                         continue
                     else:
-                        logger.error(f"API error: {resp.status}")
+                        text = await resp.text()
+                        logger.error(f"API error {resp.status}: {text[:200]}")
                         return None
             except Exception as e:
                 logger.error(f"Request failed: {e}")
@@ -73,28 +74,60 @@ class UpstoxClient:
                     await asyncio.sleep(2)
                     continue
                 return None
+        
         return None
     
     async def get_quote(self, instrument_key):
-        """Get market quote"""
+        """
+        Get market quote using V3 LTP API
+        FIXED: Changed from /v3/quote to /v3/market-quote/ltp
+        """
         encoded = quote(instrument_key, safe='')
-        url = f"{UPSTOX_QUOTE_URL_V3}?symbol={encoded}"
-        data = await self._request(url)
-        return data['data'].get(instrument_key) if data and 'data' in data else None
+        url = f"{UPSTOX_BASE_URL}/v3/market-quote/ltp"
+        params = {'instrument_key': encoded}
+        
+        data = await self._request(url, params)
+        if not data or 'data' not in data:
+            return None
+        
+        # V3 response format: data -> instrument_key -> last_price
+        key_data = data['data'].get(instrument_key.replace('|', ':'))
+        if key_data:
+            return {'last_price': key_data.get('last_price')}
+        return None
     
     async def get_candles(self, instrument_key, interval='1minute'):
-        """Get historical candles"""
+        """
+        Get historical candles using V3 Intraday API
+        FIXED: Changed to /v3/historical-candle/intraday/{instrument}/{interval}
+        """
         encoded = quote(instrument_key, safe='')
-        url = f"{UPSTOX_HISTORICAL_URL_V3}/intraday/{encoded}/{interval}"
+        
+        # Map interval format: '1minute' -> 'minutes/1'
+        if 'minute' in interval:
+            mins = interval.replace('minute', '').replace('s', '')
+            formatted_interval = f"minutes/{mins}"
+        else:
+            formatted_interval = interval
+        
+        url = f"{UPSTOX_BASE_URL}/v3/historical-candle/intraday/{encoded}/{formatted_interval}"
+        
         data = await self._request(url)
-        return data['data'] if data and 'data' in data else None
+        return data.get('data') if data and 'data' in data else None
     
     async def get_option_chain(self, instrument_key, expiry_date):
-        """Get option chain"""
-        encoded = quote(instrument_key, safe='')
-        url = f"{UPSTOX_OPTION_CHAIN_URL}?instrument_key={encoded}&expiry_date={expiry_date}"
-        data = await self._request(url)
-        return data['data'] if data and 'data' in data else None
+        """
+        Get option chain - V2 endpoint still active
+        Format: NSE_INDEX|Nifty 50 (with space)
+        """
+        url = f"{UPSTOX_BASE_URL}/v2/option/chain"
+        params = {
+            'instrument_key': instrument_key,
+            'expiry_date': expiry_date
+        }
+        
+        data = await self._request(url, params)
+        return data.get('data') if data and 'data' in data else None
 
 
 # ==================== Redis Memory Manager ====================
@@ -224,10 +257,8 @@ class RedisBrain:
         
         try:
             past = json.loads(past_str)
-            ce_chg = ((current_data.get('ce_oi', 0) - past.get('ce_oi', 0)) / 
-                     past.get('ce_oi', 1) * 100) if past.get('ce_oi', 0) > 0 else 0
-            pe_chg = ((current_data.get('pe_oi', 0) - past.get('pe_oi', 0)) / 
-                     past.get('pe_oi', 1) * 100) if past.get('pe_oi', 0) > 0 else 0
+            ce_chg = ((current_data.get('ce_oi', 0) - past.get('ce_oi', 0)) / past.get('ce_oi', 1) * 100) if past.get('ce_oi', 0) > 0 else 0
+            pe_chg = ((current_data.get('pe_oi', 0) - past.get('pe_oi', 0)) / past.get('pe_oi', 1) * 100) if past.get('pe_oi', 0) > 0 else 0
             return ce_chg, pe_chg, True
         except:
             return 0.0, 0.0, False
@@ -252,9 +283,10 @@ class RedisBrain:
         """Clean expired RAM entries"""
         if not self.memory:
             return
+        
         now = time_module.time()
-        expired = [k for k, ts in self.memory_timestamps.items() 
-                  if now - ts > MEMORY_TTL_SECONDS]
+        expired = [k for k, ts in self.memory_timestamps.items() if now - ts > MEMORY_TTL_SECONDS]
+        
         for key in expired:
             self.memory.pop(key, None)
             self.memory_timestamps.pop(key, None)
@@ -263,6 +295,7 @@ class RedisBrain:
         """Load previous day data during premarket"""
         if self.premarket_loaded:
             return
+        
         logger.info("📚 Loading previous day data...")
         self.premarket_loaded = True
         logger.info("✅ Previous day data loaded")
@@ -299,14 +332,16 @@ class DataFetcher:
             
             df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
             df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
             return df
         except Exception as e:
             logger.error(f"Futures fetch error: {e}")
             return None
     
     async def fetch_option_chain(self, spot_price):
-        """Fetch option chain"""
+        """
+        Fetch option chain
+        FIXED: Response parsing updated for V2 format
+        """
         try:
             expiry = get_next_tuesday_expiry()
             atm = calculate_atm_strike(spot_price)
@@ -319,37 +354,29 @@ class DataFetcher:
             
             strike_data = {}
             
+            # V2 Response is a list of strike objects
             if isinstance(data, list):
                 for item in data:
                     strike = item.get('strike_price')
                     if not strike or strike < min_strike or strike > max_strike:
                         continue
+                    
+                    call_opts = item.get('call_options', {})
+                    put_opts = item.get('put_options', {})
+                    
+                    call_market = call_opts.get('market_data', {})
+                    put_market = put_opts.get('market_data', {})
+                    
                     strike_data[strike] = {
-                        'ce_oi': item.get('call_options', {}).get('open_interest', 0),
-                        'pe_oi': item.get('put_options', {}).get('open_interest', 0),
-                        'ce_vol': item.get('call_options', {}).get('volume', 0),
-                        'pe_vol': item.get('put_options', {}).get('volume', 0),
-                        'ce_ltp': item.get('call_options', {}).get('last_price', 0),
-                        'pe_ltp': item.get('put_options', {}).get('last_price', 0)
-                    }
-            
-            elif isinstance(data, dict):
-                for key, item in data.items():
-                    strike = item.get('strike_price')
-                    if not strike or strike < min_strike or strike > max_strike:
-                        continue
-                    strike_data[strike] = {
-                        'ce_oi': item.get('call_options', {}).get('open_interest', 0),
-                        'pe_oi': item.get('put_options', {}).get('open_interest', 0),
-                        'ce_vol': item.get('call_options', {}).get('volume', 0),
-                        'pe_vol': item.get('put_options', {}).get('volume', 0),
-                        'ce_ltp': item.get('call_options', {}).get('last_price', 0),
-                        'pe_ltp': item.get('put_options', {}).get('last_price', 0)
+                        'ce_oi': call_market.get('oi', 0),
+                        'pe_oi': put_market.get('oi', 0),
+                        'ce_vol': call_market.get('volume', 0),
+                        'pe_vol': put_market.get('volume', 0),
+                        'ce_ltp': call_market.get('ltp', 0),
+                        'pe_ltp': put_market.get('ltp', 0)
                     }
             
             return atm, strike_data
-        
         except Exception as e:
             logger.error(f"Option chain fetch error: {e}")
             return None
-
