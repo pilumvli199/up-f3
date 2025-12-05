@@ -1,24 +1,25 @@
 """
 Configuration & Settings
-All constants, thresholds, and instrument logic
+FIXED: 24hr memory TTL
 """
 
 import os
 from datetime import datetime, timedelta, time
 
 # API Configuration
-API_VERSION = 'v2'  # Changed to V2 - stable!
+API_VERSION = 'v2'
 UPSTOX_BASE_URL = 'https://api.upstox.com'
-UPSTOX_QUOTE_URL = f'{UPSTOX_BASE_URL}/v2/market-quote/quotes'  # V2
-UPSTOX_HISTORICAL_URL = f'{UPSTOX_BASE_URL}/v2/historical-candle'  # V2
+UPSTOX_QUOTE_URL = f'{UPSTOX_BASE_URL}/v2/market-quote/quotes'
+UPSTOX_HISTORICAL_URL = f'{UPSTOX_BASE_URL}/v2/historical-candle'
 UPSTOX_OPTION_CHAIN_URL = f'{UPSTOX_BASE_URL}/v2/option/chain'
 UPSTOX_INSTRUMENTS_URL = f'{UPSTOX_BASE_URL}/v2/market-quote/instrument'
 
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', '')
 
-# Memory & Storage
+# Memory & Storage - UPDATED TO 24 HOURS
 REDIS_URL = os.getenv('REDIS_URL', None)
-MEMORY_TTL_SECONDS = 14400  # 4 hours
+MEMORY_TTL_HOURS = 24  # ✅ 24 hour expiry
+MEMORY_TTL_SECONDS = MEMORY_TTL_HOURS * 3600  # 86400 seconds
 SCAN_INTERVAL = 60  # seconds
 
 # Market Timings
@@ -72,12 +73,10 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
-# NIFTY Instrument Config
-# NOTE: These will be dynamically detected from instruments API
-# Just keeping for reference/fallback
-NIFTY_SPOT_KEY = None  # Will be auto-detected
-NIFTY_INDEX_KEY = None  # Will be auto-detected
-NIFTY_FUTURES_KEY = None  # Will be auto-detected
+# NIFTY Config
+NIFTY_SPOT_KEY = None  # Auto-detected
+NIFTY_INDEX_KEY = None
+NIFTY_FUTURES_KEY = None
 
 STRIKE_GAP = 50
 LOT_SIZE = 50
