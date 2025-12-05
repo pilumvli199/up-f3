@@ -7,10 +7,10 @@ import os
 from datetime import datetime, timedelta, time
 
 # API Configuration
-API_VERSION = 'v3'
+API_VERSION = 'v2'  # Changed to V2 - stable!
 UPSTOX_BASE_URL = 'https://api.upstox.com'
-UPSTOX_QUOTE_URL_V3 = f'{UPSTOX_BASE_URL}/v3/quote'
-UPSTOX_HISTORICAL_URL_V3 = f'{UPSTOX_BASE_URL}/v3/historical-candle'
+UPSTOX_QUOTE_URL = f'{UPSTOX_BASE_URL}/v2/market-quote/quotes'  # V2
+UPSTOX_HISTORICAL_URL = f'{UPSTOX_BASE_URL}/v2/historical-candle'  # V2
 UPSTOX_OPTION_CHAIN_URL = f'{UPSTOX_BASE_URL}/v2/option/chain'
 UPSTOX_INSTRUMENTS_URL = f'{UPSTOX_BASE_URL}/v2/market-quote/instrument'
 
