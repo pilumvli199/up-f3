@@ -93,15 +93,20 @@ class UpstoxClient:
         logger.info("🔍 Auto-detecting NIFTY instrument keys...")
         
         try:
-            # Fetch instruments CSV
-            url = UPSTOX_INSTRUMENTS_URL
+            # Fetch instruments CSV from public URL (no auth needed)
+            url = 'https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz'
             
-            async with self.session.get(url, headers=self._get_headers()) as resp:
+            async with self.session.get(url) as resp:
                 if resp.status != 200:
+                    text = await resp.text()
                     logger.error(f"❌ Failed to fetch instruments: {resp.status}")
+                    logger.error(f"Response: {text[:300]}")
                     return False
                 
-                csv_text = await resp.text()
+                # Decompress gzip
+                import gzip
+                content = await resp.read()
+                csv_text = gzip.decompress(content).decode('utf-8')
             
             # Parse CSV
             csv_file = StringIO(csv_text)
