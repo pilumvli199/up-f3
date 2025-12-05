@@ -184,8 +184,14 @@ class UpstoxClient:
         
         encoded = quote(instrument_key, safe='')
         url = f"{UPSTOX_QUOTE_URL_V3}?symbol={encoded}"
+        logger.info(f"📡 Fetching quote: {instrument_key}")
         data = await self._request(url)
-        return data['data'].get(instrument_key) if data and 'data' in data else None
+        
+        if not data or 'data' not in data:
+            logger.error(f"❌ Quote fetch failed for: {instrument_key}")
+            return None
+        
+        return data['data'].get(instrument_key)
     
     async def get_candles(self, instrument_key, interval='1minute'):
         """Get historical candles"""
@@ -195,8 +201,14 @@ class UpstoxClient:
         
         encoded = quote(instrument_key, safe='')
         url = f"{UPSTOX_HISTORICAL_URL_V3}/intraday/{encoded}/{interval}"
+        logger.info(f"📡 Fetching candles: {instrument_key}")
         data = await self._request(url)
-        return data['data'] if data and 'data' in data else None
+        
+        if not data or 'data' not in data:
+            logger.error(f"❌ Candles fetch failed for: {instrument_key}")
+            return None
+        
+        return data['data']
     
     async def get_option_chain(self, instrument_key, expiry_date):
         """Get option chain"""
@@ -206,8 +218,14 @@ class UpstoxClient:
         
         encoded = quote(instrument_key, safe='')
         url = f"{UPSTOX_OPTION_CHAIN_URL}?instrument_key={encoded}&expiry_date={expiry_date}"
+        logger.info(f"📡 Fetching option chain: {instrument_key} | Expiry: {expiry_date}")
         data = await self._request(url)
-        return data['data'] if data and 'data' in data else None
+        
+        if not data or 'data' not in data:
+            logger.error(f"❌ Option chain fetch failed for: {instrument_key} | {expiry_date}")
+            return None
+        
+        return data['data']
 
 
 class RedisBrain:
