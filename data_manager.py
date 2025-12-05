@@ -219,12 +219,27 @@ class UpstoxClient:
             logger.error(f"❌ 'data' is not dict: {type(quotes)}")
             return None
         
-        if instrument_key not in quotes:
-            logger.error(f"❌ Instrument not in response. Keys: {list(quotes.keys())[:3]}")
-            return None
+        # API returns key with colon (NSE_INDEX:Nifty 50) instead of pipe (NSE_INDEX|Nifty 50)
+        # Try both formats
+        if instrument_key in quotes:
+            logger.info(f"✅ Quote received (exact match)")
+            return quotes[instrument_key]
         
-        logger.info(f"✅ Quote received for {instrument_key}")
-        return quotes[instrument_key]
+        # Try with colon instead of pipe
+        alt_key = instrument_key.replace('|', ':')
+        if alt_key in quotes:
+            logger.info(f"✅ Quote received (colon format: {alt_key})")
+            return quotes[alt_key]
+        
+        # Try any key that starts with same segment
+        segment = instrument_key.split('|')[0] if '|' in instrument_key else instrument_key.split(':')[0]
+        for key in quotes.keys():
+            if key.startswith(segment):
+                logger.info(f"✅ Quote received (matched key: {key})")
+                return quotes[key]
+        
+        logger.error(f"❌ Instrument not found. Available keys: {list(quotes.keys())[:3]}")
+        return None
     
     async def get_candles(self, instrument_key, interval='1minute'):
         """Get historical candles using V2 API"""
