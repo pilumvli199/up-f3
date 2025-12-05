@@ -177,31 +177,42 @@ class UpstoxClient:
             return False
     
     async def get_quote(self, instrument_key):
-        """Get market quote"""
+        """Get market quote using V2 API"""
         if not instrument_key:
             logger.error("❌ No instrument key provided")
             return None
         
+        # V2 API format: /v2/market-quote/quotes?instrument_key=KEY
+        from config import UPSTOX_QUOTE_URL
         encoded = quote(instrument_key, safe='')
-        url = f"{UPSTOX_QUOTE_URL_V3}?symbol={encoded}"
-        logger.info(f"📡 Fetching quote: {instrument_key}")
+        url = f"{UPSTOX_QUOTE_URL}?instrument_key={encoded}"
+        logger.info(f"📡 Fetching quote (V2): {instrument_key}")
         data = await self._request(url)
         
         if not data or 'data' not in data:
             logger.error(f"❌ Quote fetch failed for: {instrument_key}")
             return None
         
-        return data['data'].get(instrument_key)
+        # V2 returns data as dict with instrument_key as key
+        quotes = data['data']
+        return quotes.get(instrument_key) if isinstance(quotes, dict) else None
     
     async def get_candles(self, instrument_key, interval='1minute'):
-        """Get historical candles"""
+        """Get historical candles using V2 API"""
         if not instrument_key:
             logger.error("❌ No instrument key provided")
             return None
         
+        # V2 API format: /v2/historical-candle/INSTRUMENT_KEY/INTERVAL/TO_DATE
+        from config import UPSTOX_HISTORICAL_URL
+        
+        # Need to provide to_date (current date in YYYY-MM-DD format)
+        from datetime import datetime
+        to_date = datetime.now().strftime('%Y-%m-%d')
+        
         encoded = quote(instrument_key, safe='')
-        url = f"{UPSTOX_HISTORICAL_URL_V3}/intraday/{encoded}/{interval}"
-        logger.info(f"📡 Fetching candles: {instrument_key}")
+        url = f"{UPSTOX_HISTORICAL_URL}/intraday/{encoded}/{interval}"
+        logger.info(f"📡 Fetching candles (V2): {instrument_key}")
         data = await self._request(url)
         
         if not data or 'data' not in data:
