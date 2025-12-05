@@ -1,35 +1,34 @@
 """
 Configuration & Settings
 All constants, thresholds, and instrument logic
-FIXED: API URLs updated to December 2025 specs
 """
+
 import os
 from datetime import datetime, timedelta, time
 
-# ==================== API Configuration ====================
+# API Configuration
 API_VERSION = 'v3'
 UPSTOX_BASE_URL = 'https://api.upstox.com'
-
-# FIXED: Updated endpoint URLs for V3
-UPSTOX_QUOTE_URL_V3 = f'{UPSTOX_BASE_URL}/v3/market-quote/ltp'  # Changed from /v3/quote
-UPSTOX_HISTORICAL_URL_V3 = f'{UPSTOX_BASE_URL}/v3/historical-candle/intraday'  # Changed format
-UPSTOX_OPTION_CHAIN_URL = f'{UPSTOX_BASE_URL}/v2/option/chain'  # V2 still active
+UPSTOX_QUOTE_URL_V3 = f'{UPSTOX_BASE_URL}/v3/quote'
+UPSTOX_HISTORICAL_URL_V3 = f'{UPSTOX_BASE_URL}/v3/historical-candle'
+UPSTOX_OPTION_CHAIN_URL = f'{UPSTOX_BASE_URL}/v2/option/chain'
+UPSTOX_INSTRUMENTS_URL = f'{UPSTOX_BASE_URL}/v2/market-quote/instrument'
 
 UPSTOX_ACCESS_TOKEN = os.getenv('UPSTOX_ACCESS_TOKEN', '')
 
-# ==================== Memory & Storage ====================
+# Memory & Storage
 REDIS_URL = os.getenv('REDIS_URL', None)
 MEMORY_TTL_SECONDS = 14400  # 4 hours
 SCAN_INTERVAL = 60  # seconds
 
-# ==================== Market Timings ====================
+# Market Timings
 PREMARKET_START = time(9, 10)
 PREMARKET_END = time(9, 20)
 SIGNAL_START = time(9, 25)
 MARKET_CLOSE = time(15, 30)
 WARMUP_MINUTES = 10
 
-# ==================== Trading Thresholds ====================
+# Trading Thresholds
 OI_THRESHOLD_STRONG = 3.0
 OI_THRESHOLD_MEDIUM = 1.5
 ATM_OI_THRESHOLD = 2.0
@@ -47,7 +46,7 @@ ATR_SL_GAMMA_MULTIPLIER = 2.0
 VWAP_BUFFER = 3
 MIN_CANDLE_SIZE = 5
 
-# ==================== Risk Management ====================
+# Risk Management
 USE_PREMIUM_SL = True
 PREMIUM_SL_PERCENT = 30
 
@@ -59,24 +58,26 @@ SIGNAL_COOLDOWN_SECONDS = 180
 MIN_PRIMARY_CHECKS = 2
 MIN_CONFIDENCE = 70
 
-# ==================== Exit Logic Thresholds ====================
-EXIT_OI_REVERSAL_THRESHOLD = 1.0  # If OI reverses by +1%
-EXIT_VOLUME_DRY_THRESHOLD = 0.8  # Volume drops below 80% avg
-EXIT_PREMIUM_DROP_PERCENT = 10  # Exit if premium drops 10% from peak
-EXIT_CANDLE_REJECTION_MULTIPLIER = 2  # Wick > 2x body
+# Exit Logic Thresholds
+EXIT_OI_REVERSAL_THRESHOLD = 1.0
+EXIT_VOLUME_DRY_THRESHOLD = 0.8
+EXIT_PREMIUM_DROP_PERCENT = 10
+EXIT_CANDLE_REJECTION_MULTIPLIER = 2
 
-# ==================== Telegram ====================
+# Telegram
 TELEGRAM_ENABLED = os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true'
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
-# ==================== Logging ====================
+# Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
-# ==================== NIFTY Instrument Config ====================
-# NEW (Correct):
-NIFTY_SPOT_KEY = "NSE_INDEX|Nifty%2050"  # ✅ URL encoded
-NIFTY_INDEX_KEY = "NSE_INDEX|Nifty%2050"  # ✅
+# NIFTY Instrument Config
+# NOTE: These will be dynamically detected from instruments API
+# Just keeping for reference/fallback
+NIFTY_SPOT_KEY = None  # Will be auto-detected
+NIFTY_INDEX_KEY = None  # Will be auto-detected
+NIFTY_FUTURES_KEY = None  # Will be auto-detected
 
 STRIKE_GAP = 50
 LOT_SIZE = 50
@@ -101,11 +102,6 @@ def get_futures_contract_name():
     return f"NIFTY{year}{month}FUT"
 
 
-def get_nifty_futures_key():
-    """Get NIFTY futures instrument key"""
-    return f"NSE_FO|{get_futures_contract_name()}"
-
-
 def calculate_atm_strike(spot_price):
     """Calculate ATM strike"""
     return round(spot_price / STRIKE_GAP) * STRIKE_GAP
@@ -116,4 +112,3 @@ def get_strike_range(atm_strike, num_strikes=2):
     min_strike = atm_strike - (num_strikes * STRIKE_GAP)
     max_strike = atm_strike + (num_strikes * STRIKE_GAP)
     return min_strike, max_strike
-
