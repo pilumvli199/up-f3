@@ -11,8 +11,6 @@ import time as time_module
 from datetime import datetime, timedelta
 from urllib.parse import quote
 import pandas as pd
-import csv
-from io import StringIO
 
 try:
     import redis
@@ -93,8 +91,8 @@ class UpstoxClient:
         logger.info("🔍 Auto-detecting NIFTY instrument keys...")
         
         try:
-            # Fetch instruments CSV from public URL (no auth needed)
-            url = 'https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz'
+            # Fetch instruments JSON from public URL (like v2.3)
+            url = 'https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz'
             
             async with self.session.get(url) as resp:
                 if resp.status != 200:
@@ -106,64 +104,58 @@ class UpstoxClient:
                 # Decompress gzip
                 import gzip
                 content = await resp.read()
-                csv_text = gzip.decompress(content).decode('utf-8')
-            
-            # Parse CSV
-            csv_file = StringIO(csv_text)
-            reader = csv.DictReader(csv_file)
+                json_text = gzip.decompress(content).decode('utf-8')
+                instruments = json.loads(json_text)
             
             spot_found = False
-            futures_found = False
             
-            # Find NIFTY spot
-            csv_file.seek(0)
-            next(reader)  # Skip header
-            
-            for row in reader:
-                if row.get('segment') == 'NSE_INDEX':
-                    name = row.get('name', '').upper()
-                    symbol = row.get('trading_symbol', '').upper()
-                    
-                    if 'NIFTY 50' in name or 'NIFTY 50' in symbol or symbol == 'NIFTY':
-                        self.spot_key = row.get('instrument_key')
-                        self.index_key = self.spot_key  # Same for option chain
-                        logger.info(f"✅ NIFTY Spot detected: {self.spot_key}")
-                        spot_found = True
-                        break
+            # Find NIFTY spot (check 'name' field like v2.3)
+            for instrument in instruments:
+                if instrument.get('segment') != 'NSE_INDEX':
+                    continue
+                
+                name = instrument.get('name', '').upper()
+                symbol = instrument.get('trading_symbol', '').upper()
+                
+                # Check for "NIFTY 50" in name or symbol
+                if 'NIFTY 50' in name or 'NIFTY 50' in symbol or symbol == 'NIFTY':
+                    self.spot_key = instrument.get('instrument_key')
+                    self.index_key = self.spot_key  # Same for option chain
+                    logger.info(f"✅ NIFTY Spot detected: {self.spot_key}")
+                    spot_found = True
+                    break
             
             if not spot_found:
                 logger.error("❌ NIFTY spot not found in instruments")
                 return False
             
             # Find nearest NIFTY futures
-            csv_file.seek(0)
-            next(csv.DictReader(csv_file))  # Reset to start
-            
             now = datetime.now(IST)
             futures_list = []
             
-            for row in reader:
-                if row.get('segment') == 'NSE_FO':
-                    symbol = row.get('trading_symbol', '')
+            for instrument in instruments:
+                if instrument.get('segment') != 'NSE_FO':
+                    continue
+                if instrument.get('instrument_type') != 'FUT':
+                    continue
+                if instrument.get('name') != 'NIFTY':
+                    continue
+                
+                expiry_ms = instrument.get('expiry', 0)
+                if not expiry_ms:
+                    continue
+                
+                try:
+                    expiry_dt = datetime.fromtimestamp(expiry_ms / 1000, tz=IST)
                     
-                    if symbol.startswith('NIFTY') and 'FUT' in symbol:
-                        expiry_str = row.get('expiry')
-                        if not expiry_str:
-                            continue
-                        
-                        try:
-                            # Parse expiry timestamp (milliseconds)
-                            expiry_ms = int(expiry_str)
-                            expiry_dt = datetime.fromtimestamp(expiry_ms / 1000, tz=IST)
-                            
-                            if expiry_dt > now:
-                                futures_list.append({
-                                    'key': row.get('instrument_key'),
-                                    'expiry': expiry_dt,
-                                    'symbol': symbol
-                                })
-                        except:
-                            continue
+                    if expiry_dt > now:
+                        futures_list.append({
+                            'key': instrument.get('instrument_key'),
+                            'expiry': expiry_dt,
+                            'symbol': instrument.get('trading_symbol', '')
+                        })
+                except:
+                    continue
             
             if not futures_list:
                 logger.error("❌ No NIFTY futures found")
