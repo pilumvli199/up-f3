@@ -74,9 +74,9 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
 # ==================== NIFTY Instrument Config ====================
-# FIXED: Correct format for Upstox API
-NIFTY_SPOT_KEY = "NSE_INDEX|Nifty 50"  # With space - correct format
-NIFTY_INDEX_KEY = "NSE_INDEX|Nifty 50"  # With space - correct format
+# NEW (Correct):
+NIFTY_SPOT_KEY = "NSE_INDEX|Nifty%2050"  # ✅ URL encoded
+NIFTY_INDEX_KEY = "NSE_INDEX|Nifty%2050"  # ✅
 
 STRIKE_GAP = 50
 LOT_SIZE = 50
@@ -116,3 +116,4 @@ def get_strike_range(atm_strike, num_strikes=2):
     min_strike = atm_strike - (num_strikes * STRIKE_GAP)
     max_strike = atm_strike + (num_strikes * STRIKE_GAP)
     return min_strike, max_strike
+
