@@ -60,27 +60,41 @@ class UpstoxClient:
         self._last_request = asyncio.get_event_loop().time()
     
     async def _request(self, url, params=None):
-        """Make API request with retry"""
+        """Make API request with retry and timeout"""
         await self._rate_limit()
         
         for attempt in range(3):
             try:
-                async with self.session.get(url, headers=self._get_headers(), params=params) as resp:
+                # Add 10 second timeout
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with self.session.get(url, headers=self._get_headers(), 
+                                           params=params, timeout=timeout) as resp:
                     if resp.status == 200:
                         return await resp.json()
                     elif resp.status == 429:
+                        logger.warning(f"⚠️ Rate limit hit, retry {attempt+1}/3")
                         await asyncio.sleep(2 ** attempt)
                         continue
                     else:
                         text = await resp.text()
-                        logger.error(f"API error {resp.status}: {text[:200]}")
+                        logger.error(f"❌ API error {resp.status}: {text[:200]}")
                         return None
-            except Exception as e:
-                logger.error(f"Request failed: {e}")
+            
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Request timeout (attempt {attempt + 1}/3): {url[:100]}")
                 if attempt < 2:
                     await asyncio.sleep(2)
                     continue
                 return None
+            
+            except Exception as e:
+                logger.error(f"❌ Request failed (attempt {attempt + 1}/3): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2)
+                    continue
+                return None
+        
+        logger.error(f"❌ All retries failed for: {url[:100]}")
         return None
     
     async def detect_instruments(self):
@@ -422,10 +436,24 @@ class DataFetcher:
                 logger.error("❌ Spot key not detected yet")
                 return None
             
+            logger.info(f"📡 Fetching spot quote...")
             data = await self.client.get_quote(self.client.spot_key)
-            return float(data.get('last_price')) if data else None
+            
+            if not data:
+                logger.error("❌ Spot quote returned None")
+                return None
+            
+            ltp = data.get('last_price')
+            if not ltp:
+                logger.error(f"❌ No 'last_price' in response: {list(data.keys())}")
+                return None
+            
+            spot_price = float(ltp)
+            logger.info(f"✅ Spot price: ₹{spot_price:.2f}")
+            return spot_price
+            
         except Exception as e:
-            logger.error(f"Spot fetch error: {e}")
+            logger.error(f"❌ Spot fetch error: {e}", exc_info=True)
             return None
     
     async def fetch_futures(self):
