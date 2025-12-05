@@ -129,20 +129,9 @@ class UpstoxClient:
                 logger.error("❌ NIFTY spot not found in instruments")
                 return False
             
-            # Find nearest NIFTY futures (WEEKLY Tuesday expiry only)
+            # Find nearest NIFTY futures (MONTHLY expiry - for volume/candles)
             now = datetime.now(IST)
             futures_list = []
-            
-            # Calculate next Tuesday (weekly expiry)
-            next_tuesday = now
-            days_ahead = 1 - now.weekday()  # Tuesday = 1
-            if days_ahead <= 0:
-                days_ahead += 7
-            next_tuesday = now + timedelta(days=days_ahead)
-            next_tuesday = next_tuesday.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            # Also accept the Tuesday after (in case today is Tuesday)
-            week_after = next_tuesday + timedelta(days=7)
             
             for instrument in instruments:
                 if instrument.get('segment') != 'NSE_FO':
@@ -159,14 +148,13 @@ class UpstoxClient:
                 try:
                     expiry_dt = datetime.fromtimestamp(expiry_ms / 1000, tz=IST)
                     
-                    # Only accept if expiry is a Tuesday AND within next 2 weeks
-                    if expiry_dt.weekday() == 1:  # Tuesday only
-                        if next_tuesday <= expiry_dt <= week_after:
-                            futures_list.append({
-                                'key': instrument.get('instrument_key'),
-                                'expiry': expiry_dt,
-                                'symbol': instrument.get('trading_symbol', '')
-                            })
+                    # Accept any future expiry (monthly is fine for futures)
+                    if expiry_dt > now:
+                        futures_list.append({
+                            'key': instrument.get('instrument_key'),
+                            'expiry': expiry_dt,
+                            'symbol': instrument.get('trading_symbol', '')
+                        })
                 except:
                     continue
             
