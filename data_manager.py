@@ -1,7 +1,7 @@
 """
 Data Manager: Upstox API + Redis Memory
 Handles all data fetching and OI storage
-FIXED: Dynamic instrument key detection like v2.3
+FIXED: Dynamic instrument key detection + V2 APIs
 """
 
 import asyncio
@@ -25,7 +25,7 @@ logger = setup_logger("data_manager")
 
 
 class UpstoxClient:
-    """Upstox API V3 Client with dynamic instrument detection"""
+    """Upstox API V2 Client with dynamic instrument detection"""
     
     def __init__(self):
         self.session = None
@@ -196,20 +196,35 @@ class UpstoxClient:
             logger.error("❌ No instrument key provided")
             return None
         
-        # V2 API format: /v2/market-quote/quotes?instrument_key=KEY
-        from config import UPSTOX_QUOTE_URL
+        # V2 API format: /v2/market-quote/quotes?symbol=KEY
         encoded = quote(instrument_key, safe='')
-        url = f"{UPSTOX_QUOTE_URL}?instrument_key={encoded}"
+        url = f"{UPSTOX_QUOTE_URL}?symbol={encoded}"
+        
         logger.info(f"📡 Fetching quote (V2): {instrument_key}")
+        
         data = await self._request(url)
         
-        if not data or 'data' not in data:
-            logger.error(f"❌ Quote fetch failed for: {instrument_key}")
+        if not data:
+            logger.error(f"❌ Quote API returned None")
+            return None
+        
+        if 'data' not in data:
+            logger.error(f"❌ No 'data' key in response: {list(data.keys())}")
             return None
         
         # V2 returns data as dict with instrument_key as key
         quotes = data['data']
-        return quotes.get(instrument_key) if isinstance(quotes, dict) else None
+        
+        if not isinstance(quotes, dict):
+            logger.error(f"❌ 'data' is not dict: {type(quotes)}")
+            return None
+        
+        if instrument_key not in quotes:
+            logger.error(f"❌ Instrument not in response. Keys: {list(quotes.keys())[:3]}")
+            return None
+        
+        logger.info(f"✅ Quote received for {instrument_key}")
+        return quotes[instrument_key]
     
     async def get_candles(self, instrument_key, interval='1minute'):
         """Get historical candles using V2 API"""
@@ -218,14 +233,9 @@ class UpstoxClient:
             return None
         
         # V2 API format: /v2/historical-candle/INSTRUMENT_KEY/INTERVAL/TO_DATE
-        from config import UPSTOX_HISTORICAL_URL
-        
-        # Need to provide to_date (current date in YYYY-MM-DD format)
-        from datetime import datetime
-        to_date = datetime.now().strftime('%Y-%m-%d')
-        
         encoded = quote(instrument_key, safe='')
         url = f"{UPSTOX_HISTORICAL_URL}/intraday/{encoded}/{interval}"
+        
         logger.info(f"📡 Fetching candles (V2): {instrument_key}")
         data = await self._request(url)
         
@@ -475,9 +485,10 @@ class DataFetcher:
             df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             
+            logger.info(f"✅ Futures candles: {len(df)} candles")
             return df
         except Exception as e:
-            logger.error(f"Futures fetch error: {e}")
+            logger.error(f"❌ Futures fetch error: {e}")
             return None
     
     async def fetch_option_chain(self, spot_price):
@@ -526,8 +537,9 @@ class DataFetcher:
                         'pe_ltp': item.get('put_options', {}).get('last_price', 0)
                     }
             
+            logger.info(f"✅ Option chain: {len(strike_data)} strikes")
             return atm, strike_data
         
         except Exception as e:
-            logger.error(f"Option chain fetch error: {e}")
+            logger.error(f"❌ Option chain fetch error: {e}")
             return None
