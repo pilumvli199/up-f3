@@ -1,6 +1,6 @@
 """
 Market Analyzers: OI, Volume, Technical, Market Structure
-All analysis functions in one place
+FIXED: Better PCR calculation, zero handling
 """
 
 import pandas as pd
@@ -18,14 +18,25 @@ class OIAnalyzer:
     @staticmethod
     def calculate_total_oi(strike_data):
         """Calculate total CE/PE OI"""
+        if not strike_data:
+            return 0, 0
+        
         total_ce = sum(d.get('ce_oi', 0) for d in strike_data.values())
         total_pe = sum(d.get('pe_oi', 0) for d in strike_data.values())
+        
         return total_ce, total_pe
     
     @staticmethod
     def calculate_pcr(total_pe, total_ce):
-        """Calculate Put-Call Ratio"""
-        return round(total_pe / total_ce, 2) if total_ce > 0 else 0.0
+        """Calculate Put-Call Ratio with zero handling"""
+        if total_ce == 0:
+            if total_pe == 0:
+                return 0.0  # No data
+            else:
+                return 10.0  # Very high PCR
+        
+        pcr = total_pe / total_ce
+        return round(pcr, 2)
     
     @staticmethod
     def detect_unwinding(ce_5m, ce_15m, pe_5m, pe_15m):
@@ -49,7 +60,14 @@ class OIAnalyzer:
     @staticmethod
     def get_atm_data(strike_data, atm_strike):
         """Get ATM strike data"""
-        return strike_data.get(atm_strike, {})
+        return strike_data.get(atm_strike, {
+            'ce_oi': 0,
+            'pe_oi': 0,
+            'ce_vol': 0,
+            'pe_vol': 0,
+            'ce_ltp': 0,
+            'pe_ltp': 0
+        })
 
 
 # ==================== Volume Analyzer ====================
@@ -59,6 +77,9 @@ class VolumeAnalyzer:
     @staticmethod
     def calculate_total_volume(strike_data):
         """Calculate total CE/PE volume"""
+        if not strike_data:
+            return 0, 0
+        
         ce_vol = sum(d.get('ce_vol', 0) for d in strike_data.values())
         pe_vol = sum(d.get('pe_vol', 0) for d in strike_data.values())
         return ce_vol, pe_vol
@@ -89,8 +110,13 @@ class VolumeAnalyzer:
     @staticmethod
     def analyze_volume_trend(df, periods=5):
         """Analyze volume trend"""
-        if len(df) < periods + 1:
-            return {'trend': 'unknown', 'avg_volume': 0, 'current_volume': 0, 'ratio': 1.0}
+        if df is None or len(df) < periods + 1:
+            return {
+                'trend': 'unknown',
+                'avg_volume': 0,
+                'current_volume': 0,
+                'ratio': 1.0
+            }
         
         recent = df['volume'].tail(periods + 1)
         avg = recent.iloc[:-1].mean()
@@ -126,12 +152,12 @@ class TechnicalAnalyzer:
             df_copy['vwap'] = df_copy['cum_vol_price'] / df_copy['cum_volume']
             return round(df_copy['vwap'].iloc[-1], 2)
         except Exception as e:
-            logger.error(f"VWAP error: {e}")
+            logger.error(f"❌ VWAP error: {e}")
             return None
     
     @staticmethod
     def calculate_vwap_distance(price, vwap):
-        """Calculate distance from VWAP in points"""
+        """Calculate distance from VWAP"""
         if not vwap or not price:
             return 0
         return round(price - vwap, 2)
@@ -151,7 +177,7 @@ class TechnicalAnalyzer:
             atr = df_copy['tr'].rolling(window=period).mean().iloc[-1]
             return round(atr, 2)
         except Exception as e:
-            logger.error(f"ATR error: {e}")
+            logger.error(f"❌ ATR error: {e}")
             return ATR_FALLBACK
     
     @staticmethod
@@ -195,14 +221,19 @@ class TechnicalAnalyzer:
                 'close': c
             }
         except Exception as e:
-            logger.error(f"Candle analysis error: {e}")
+            logger.error(f"❌ Candle error: {e}")
             return TechnicalAnalyzer._empty_candle()
     
     @staticmethod
     def detect_momentum(df, periods=3):
         """Detect price momentum"""
         if df is None or len(df) < periods:
-            return {'direction': 'unknown', 'strength': 0, 'consecutive_green': 0, 'consecutive_red': 0}
+            return {
+                'direction': 'unknown',
+                'strength': 0,
+                'consecutive_green': 0,
+                'consecutive_red': 0
+            }
         
         recent = df.tail(periods)
         green = sum(recent['close'] > recent['open'])
@@ -221,9 +252,17 @@ class TechnicalAnalyzer:
     @staticmethod
     def _empty_candle():
         return {
-            'color': 'UNKNOWN', 'size': 0, 'body_size': 0,
-            'upper_wick': 0, 'lower_wick': 0, 'rejection': False,
-            'rejection_type': None, 'open': 0, 'high': 0, 'low': 0, 'close': 0
+            'color': 'UNKNOWN',
+            'size': 0,
+            'body_size': 0,
+            'upper_wick': 0,
+            'lower_wick': 0,
+            'rejection': False,
+            'rejection_type': None,
+            'open': 0,
+            'high': 0,
+            'low': 0,
+            'close': 0
         }
 
 
@@ -238,6 +277,9 @@ class MarketAnalyzer:
             return 0, 0.0
         
         strikes = sorted(strike_data.keys())
+        if not strikes:
+            return 0, 0.0
+        
         max_pain_strike = strikes[len(strikes) // 2]
         min_pain = float('inf')
         
