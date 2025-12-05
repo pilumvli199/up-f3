@@ -1,6 +1,6 @@
 """
 Utilities: Time, Logging, Validators
-Helper functions for bot operations
+FIXED: Better strike data validation
 """
 
 import pytz
@@ -98,19 +98,39 @@ def validate_price(price):
 
 
 def validate_strike_data(strike_data, min_strikes=3):
-    """Validate option chain data - FIXED to accept float strikes"""
+    """
+    Validate option chain data
+    FIXED: Accept float strikes + validate OI values
+    """
     if not strike_data or not isinstance(strike_data, dict):
         return False
+    
     if len(strike_data) < min_strikes:
         return False
     
+    # Check structure
     for strike, data in strike_data.items():
-        # Accept both int and float strikes
-        if not isinstance(strike, (int, float)) or not isinstance(data, dict):
+        # Accept int or float strikes
+        if not isinstance(strike, (int, float)):
             return False
+        
+        if not isinstance(data, dict):
+            return False
+        
+        # Check required fields
         required = ['ce_oi', 'pe_oi', 'ce_vol', 'pe_vol']
         if not all(f in data for f in required):
             return False
+        
+        # ✅ Check if values are numeric
+        for field in required:
+            if not isinstance(data[field], (int, float)):
+                return False
+    
+    # ✅ Check if at least some OI exists
+    total_oi = sum(d['ce_oi'] + d['pe_oi'] for d in strike_data.values())
+    if total_oi == 0:
+        return False
     
     return True
 
@@ -119,9 +139,12 @@ def validate_candle_data(df, min_candles=10):
     """Validate futures candle data"""
     if df is None or df.empty:
         return False
+    
     if len(df) < min_candles:
         return False
+    
     required = ['close', 'high', 'low', 'volume']
     if not all(col in df.columns for col in required):
         return False
+    
     return True
