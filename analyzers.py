@@ -1,4 +1,3 @@
-
 """
 Market Analyzers: OI, Volume, Technical, Market Structure
 All analysis functions in one place
@@ -91,7 +90,7 @@ class VolumeAnalyzer:
     def analyze_volume_trend(df, periods=5):
         """Analyze volume trend"""
         if len(df) < periods + 1:
-            return {'trend': 'unknown', 'avg': 0, 'current': 0, 'ratio': 1.0}
+            return {'trend': 'unknown', 'avg_volume': 0, 'current_volume': 0, 'ratio': 1.0}
         
         recent = df['volume'].tail(periods + 1)
         avg = recent.iloc[:-1].mean()
@@ -129,6 +128,13 @@ class TechnicalAnalyzer:
         except Exception as e:
             logger.error(f"VWAP error: {e}")
             return None
+    
+    @staticmethod
+    def calculate_vwap_distance(price, vwap):
+        """Calculate distance from VWAP in points"""
+        if not vwap or not price:
+            return 0
+        return round(price - vwap, 2)
     
     @staticmethod
     def calculate_atr(df, period=ATR_PERIOD):
@@ -196,7 +202,7 @@ class TechnicalAnalyzer:
     def detect_momentum(df, periods=3):
         """Detect price momentum"""
         if df is None or len(df) < periods:
-            return {'direction': 'unknown', 'strength': 0, 'green': 0, 'red': 0}
+            return {'direction': 'unknown', 'strength': 0, 'consecutive_green': 0, 'consecutive_red': 0}
         
         recent = df.tail(periods)
         green = sum(recent['close'] > recent['open'])
@@ -291,4 +297,3 @@ class MarketAnalyzer:
             return "BEARISH"
         else:
             return "NEUTRAL"
-
