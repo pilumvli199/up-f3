@@ -1,8 +1,9 @@
 """
 Data Manager: Upstox API + Redis Memory
 Handles all data fetching and OI storage
-FIXED: API endpoints updated to match December 2025 Upstox API V3 specs
+FIXED: Dynamic instrument key detection like v2.3
 """
+
 import asyncio
 import aiohttp
 import json
@@ -10,6 +11,8 @@ import time as time_module
 from datetime import datetime, timedelta
 from urllib.parse import quote
 import pandas as pd
+import csv
+from io import StringIO
 
 try:
     import redis
@@ -23,17 +26,23 @@ from utils import IST, setup_logger
 logger = setup_logger("data_manager")
 
 
-# ==================== Upstox Client ====================
 class UpstoxClient:
-    """Upstox API V3 Client - Updated for December 2025"""
+    """Upstox API V3 Client with dynamic instrument detection"""
     
     def __init__(self):
         self.session = None
         self._rate_limit_delay = 0.1
         self._last_request = 0
+        
+        # Instrument keys (will be auto-detected)
+        self.spot_key = None
+        self.index_key = None
+        self.futures_key = None
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
+        # Auto-detect instrument keys on startup
+        await self.detect_instruments()
         return self
     
     async def __aexit__(self, *args):
@@ -74,63 +83,135 @@ class UpstoxClient:
                     await asyncio.sleep(2)
                     continue
                 return None
-        
         return None
+    
+    async def detect_instruments(self):
+        """
+        Auto-detect NIFTY instrument keys from instruments API
+        Like v2.3 - dynamic detection!
+        """
+        logger.info("🔍 Auto-detecting NIFTY instrument keys...")
+        
+        try:
+            # Fetch instruments CSV
+            url = UPSTOX_INSTRUMENTS_URL
+            
+            async with self.session.get(url, headers=self._get_headers()) as resp:
+                if resp.status != 200:
+                    logger.error(f"❌ Failed to fetch instruments: {resp.status}")
+                    return False
+                
+                csv_text = await resp.text()
+            
+            # Parse CSV
+            csv_file = StringIO(csv_text)
+            reader = csv.DictReader(csv_file)
+            
+            spot_found = False
+            futures_found = False
+            
+            # Find NIFTY spot
+            csv_file.seek(0)
+            next(reader)  # Skip header
+            
+            for row in reader:
+                if row.get('segment') == 'NSE_INDEX':
+                    name = row.get('name', '').upper()
+                    symbol = row.get('trading_symbol', '').upper()
+                    
+                    if 'NIFTY 50' in name or 'NIFTY 50' in symbol or symbol == 'NIFTY':
+                        self.spot_key = row.get('instrument_key')
+                        self.index_key = self.spot_key  # Same for option chain
+                        logger.info(f"✅ NIFTY Spot detected: {self.spot_key}")
+                        spot_found = True
+                        break
+            
+            if not spot_found:
+                logger.error("❌ NIFTY spot not found in instruments")
+                return False
+            
+            # Find nearest NIFTY futures
+            csv_file.seek(0)
+            next(csv.DictReader(csv_file))  # Reset to start
+            
+            now = datetime.now(IST)
+            futures_list = []
+            
+            for row in reader:
+                if row.get('segment') == 'NSE_FO':
+                    symbol = row.get('trading_symbol', '')
+                    
+                    if symbol.startswith('NIFTY') and 'FUT' in symbol:
+                        expiry_str = row.get('expiry')
+                        if not expiry_str:
+                            continue
+                        
+                        try:
+                            # Parse expiry timestamp (milliseconds)
+                            expiry_ms = int(expiry_str)
+                            expiry_dt = datetime.fromtimestamp(expiry_ms / 1000, tz=IST)
+                            
+                            if expiry_dt > now:
+                                futures_list.append({
+                                    'key': row.get('instrument_key'),
+                                    'expiry': expiry_dt,
+                                    'symbol': symbol
+                                })
+                        except:
+                            continue
+            
+            if not futures_list:
+                logger.error("❌ No NIFTY futures found")
+                return False
+            
+            # Get nearest expiry
+            futures_list.sort(key=lambda x: x['expiry'])
+            nearest = futures_list[0]
+            
+            self.futures_key = nearest['key']
+            logger.info(f"✅ NIFTY Futures detected: {nearest['symbol']}")
+            logger.info(f"📅 Expiry: {nearest['expiry'].strftime('%Y-%m-%d')}")
+            
+            return True
+        
+        except Exception as e:
+            logger.error(f"❌ Instrument detection failed: {e}")
+            return False
     
     async def get_quote(self, instrument_key):
-        """
-        Get market quote using V3 LTP API
-        FIXED: Changed from /v3/quote to /v3/market-quote/ltp
-        """
-        encoded = quote(instrument_key, safe='')
-        url = f"{UPSTOX_BASE_URL}/v3/market-quote/ltp"
-        params = {'instrument_key': encoded}
-        
-        data = await self._request(url, params)
-        if not data or 'data' not in data:
+        """Get market quote"""
+        if not instrument_key:
+            logger.error("❌ No instrument key provided")
             return None
         
-        # V3 response format: data -> instrument_key -> last_price
-        key_data = data['data'].get(instrument_key.replace('|', ':'))
-        if key_data:
-            return {'last_price': key_data.get('last_price')}
-        return None
+        encoded = quote(instrument_key, safe='')
+        url = f"{UPSTOX_QUOTE_URL_V3}?symbol={encoded}"
+        data = await self._request(url)
+        return data['data'].get(instrument_key) if data and 'data' in data else None
     
     async def get_candles(self, instrument_key, interval='1minute'):
-        """
-        Get historical candles using V3 Intraday API
-        FIXED: Changed to /v3/historical-candle/intraday/{instrument}/{interval}
-        """
+        """Get historical candles"""
+        if not instrument_key:
+            logger.error("❌ No instrument key provided")
+            return None
+        
         encoded = quote(instrument_key, safe='')
-        
-        # Map interval format: '1minute' -> 'minutes/1'
-        if 'minute' in interval:
-            mins = interval.replace('minute', '').replace('s', '')
-            formatted_interval = f"minutes/{mins}"
-        else:
-            formatted_interval = interval
-        
-        url = f"{UPSTOX_BASE_URL}/v3/historical-candle/intraday/{encoded}/{formatted_interval}"
-        
+        url = f"{UPSTOX_HISTORICAL_URL_V3}/intraday/{encoded}/{interval}"
         data = await self._request(url)
-        return data.get('data') if data and 'data' in data else None
+        return data['data'] if data and 'data' in data else None
     
     async def get_option_chain(self, instrument_key, expiry_date):
-        """
-        Get option chain - V2 endpoint still active
-        Format: NSE_INDEX|Nifty 50 (with space)
-        """
-        url = f"{UPSTOX_BASE_URL}/v2/option/chain"
-        params = {
-            'instrument_key': instrument_key,
-            'expiry_date': expiry_date
-        }
+        """Get option chain"""
+        if not instrument_key:
+            logger.error("❌ No instrument key provided")
+            return None
         
-        data = await self._request(url, params)
-        return data.get('data') if data and 'data' in data else None
+        encoded = quote(instrument_key, safe='')
+        url = f"{UPSTOX_OPTION_CHAIN_URL}?instrument_key={encoded}&expiry_date={expiry_date}"
+        data = await self._request(url)
+        return data['data'] if data and 'data' in data else None
 
 
-# ==================== Redis Memory Manager ====================
 class RedisBrain:
     """Memory manager for OI snapshots"""
     
@@ -257,8 +338,10 @@ class RedisBrain:
         
         try:
             past = json.loads(past_str)
-            ce_chg = ((current_data.get('ce_oi', 0) - past.get('ce_oi', 0)) / past.get('ce_oi', 1) * 100) if past.get('ce_oi', 0) > 0 else 0
-            pe_chg = ((current_data.get('pe_oi', 0) - past.get('pe_oi', 0)) / past.get('pe_oi', 1) * 100) if past.get('pe_oi', 0) > 0 else 0
+            ce_chg = ((current_data.get('ce_oi', 0) - past.get('ce_oi', 0)) / 
+                     past.get('ce_oi', 1) * 100) if past.get('ce_oi', 0) > 0 else 0
+            pe_chg = ((current_data.get('pe_oi', 0) - past.get('pe_oi', 0)) / 
+                     past.get('pe_oi', 1) * 100) if past.get('pe_oi', 0) > 0 else 0
             return ce_chg, pe_chg, True
         except:
             return 0.0, 0.0, False
@@ -283,10 +366,9 @@ class RedisBrain:
         """Clean expired RAM entries"""
         if not self.memory:
             return
-        
         now = time_module.time()
-        expired = [k for k, ts in self.memory_timestamps.items() if now - ts > MEMORY_TTL_SECONDS]
-        
+        expired = [k for k, ts in self.memory_timestamps.items() 
+                  if now - ts > MEMORY_TTL_SECONDS]
         for key in expired:
             self.memory.pop(key, None)
             self.memory_timestamps.pop(key, None)
@@ -295,13 +377,11 @@ class RedisBrain:
         """Load previous day data during premarket"""
         if self.premarket_loaded:
             return
-        
         logger.info("📚 Loading previous day data...")
         self.premarket_loaded = True
         logger.info("✅ Previous day data loaded")
 
 
-# ==================== Data Fetcher ====================
 class DataFetcher:
     """High-level data fetching"""
     
@@ -311,7 +391,11 @@ class DataFetcher:
     async def fetch_spot(self):
         """Fetch NIFTY spot price"""
         try:
-            data = await self.client.get_quote(NIFTY_SPOT_KEY)
+            if not self.client.spot_key:
+                logger.error("❌ Spot key not detected yet")
+                return None
+            
+            data = await self.client.get_quote(self.client.spot_key)
             return float(data.get('last_price')) if data else None
         except Exception as e:
             logger.error(f"Spot fetch error: {e}")
@@ -320,8 +404,11 @@ class DataFetcher:
     async def fetch_futures(self):
         """Fetch futures candles"""
         try:
-            key = get_nifty_futures_key()
-            data = await self.client.get_candles(key, '1minute')
+            if not self.client.futures_key:
+                logger.error("❌ Futures key not detected yet")
+                return None
+            
+            data = await self.client.get_candles(self.client.futures_key, '1minute')
             
             if not data or 'candles' not in data:
                 return None
@@ -332,51 +419,60 @@ class DataFetcher:
             
             df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
             df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
             return df
         except Exception as e:
             logger.error(f"Futures fetch error: {e}")
             return None
     
     async def fetch_option_chain(self, spot_price):
-        """
-        Fetch option chain
-        FIXED: Response parsing updated for V2 format
-        """
+        """Fetch option chain"""
         try:
+            if not self.client.index_key:
+                logger.error("❌ Index key not detected yet")
+                return None
+            
             expiry = get_next_tuesday_expiry()
             atm = calculate_atm_strike(spot_price)
             min_strike, max_strike = get_strike_range(atm)
             
-            data = await self.client.get_option_chain(NIFTY_INDEX_KEY, expiry)
+            data = await self.client.get_option_chain(self.client.index_key, expiry)
             
             if not data:
                 return None
             
             strike_data = {}
             
-            # V2 Response is a list of strike objects
             if isinstance(data, list):
                 for item in data:
                     strike = item.get('strike_price')
                     if not strike or strike < min_strike or strike > max_strike:
                         continue
-                    
-                    call_opts = item.get('call_options', {})
-                    put_opts = item.get('put_options', {})
-                    
-                    call_market = call_opts.get('market_data', {})
-                    put_market = put_opts.get('market_data', {})
-                    
                     strike_data[strike] = {
-                        'ce_oi': call_market.get('oi', 0),
-                        'pe_oi': put_market.get('oi', 0),
-                        'ce_vol': call_market.get('volume', 0),
-                        'pe_vol': put_market.get('volume', 0),
-                        'ce_ltp': call_market.get('ltp', 0),
-                        'pe_ltp': put_market.get('ltp', 0)
+                        'ce_oi': item.get('call_options', {}).get('open_interest', 0),
+                        'pe_oi': item.get('put_options', {}).get('open_interest', 0),
+                        'ce_vol': item.get('call_options', {}).get('volume', 0),
+                        'pe_vol': item.get('put_options', {}).get('volume', 0),
+                        'ce_ltp': item.get('call_options', {}).get('last_price', 0),
+                        'pe_ltp': item.get('put_options', {}).get('last_price', 0)
+                    }
+            
+            elif isinstance(data, dict):
+                for key, item in data.items():
+                    strike = item.get('strike_price')
+                    if not strike or strike < min_strike or strike > max_strike:
+                        continue
+                    strike_data[strike] = {
+                        'ce_oi': item.get('call_options', {}).get('open_interest', 0),
+                        'pe_oi': item.get('put_options', {}).get('open_interest', 0),
+                        'ce_vol': item.get('call_options', {}).get('volume', 0),
+                        'pe_vol': item.get('put_options', {}).get('volume', 0),
+                        'ce_ltp': item.get('call_options', {}).get('last_price', 0),
+                        'pe_ltp': item.get('put_options', {}).get('last_price', 0)
                     }
             
             return atm, strike_data
+        
         except Exception as e:
             logger.error(f"Option chain fetch error: {e}")
             return None
