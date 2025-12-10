@@ -1,5 +1,6 @@
 """
 Alerts: Telegram Bot & Message Formatting
+UPDATED: Include VWAP score, OI strength, deep analysis info
 """
 
 import logging
@@ -72,8 +73,7 @@ class TelegramBot:
     
     async def send_update(self, message):
         """Send update"""
-        formatted = f"📊 <b>Market Update</b>\n\n{message}"
-        return await self.send(formatted)
+        return await self.send(message)
     
     def is_enabled(self):
         return self.enabled and self.bot is not None
@@ -85,15 +85,19 @@ class MessageFormatter:
     
     @staticmethod
     def format_entry_signal(signal):
-        """Format entry signal alert"""
+        """Format entry signal alert with enhanced info"""
         emoji = "📈" if signal.signal_type.value == "CE_BUY" else "📉"
         expiry = " ⚡ <b>EXPIRY DAY</b>" if signal.is_expiry_day else ""
+        
+        # OI strength emoji
+        oi_emoji = "🔥" if signal.oi_strength == 'strong' else "💪" if signal.oi_strength == 'medium' else "📊"
         
         msg = f"""
 {emoji} <b>{signal.signal_type.value} SIGNAL</b>{expiry}
 
 ⏰ {signal.timestamp.strftime('%I:%M:%S %p')}
 💯 Confidence: <b>{signal.confidence}%</b>
+{oi_emoji} OI Strength: <b>{signal.oi_strength.upper()}</b>
 
 ━━━━━━━━━━━━━━━━━━━━
 📊 <b>ENTRY DETAILS</b>
@@ -118,7 +122,8 @@ Premium SL: ₹{signal.premium_sl:.2f}
 📈 <b>ANALYSIS</b>
 ━━━━━━━━━━━━━━━━━━━━
 
-VWAP: ₹{signal.vwap:.2f}
+VWAP: ₹{signal.vwap:.2f} ({signal.vwap_distance:+.0f} pts)
+VWAP Score: {signal.vwap_score}/100 {'✅' if signal.vwap_score >= 80 else '⚠️'}
 ATR: {signal.atr:.1f}
 PCR: {signal.pcr}
 
@@ -130,12 +135,12 @@ ATM {signal.atm_strike}:
   CE: {signal.atm_ce_change:+.1f}%
   PE: {signal.atm_pe_change:+.1f}%
 
-Volume: {signal.volume_ratio:.1f}x {'✅' if signal.volume_spike else ''}
+Volume: {signal.volume_ratio:.1f}x {'🔥' if signal.volume_spike else ''}
 Order Flow: {signal.order_flow:.2f}
 
 ━━━━━━━━━━━━━━━━━━━━
 ✅ Primary: {signal.primary_checks}/3
-🎁 Bonus: {signal.bonus_checks}/8
+🎁 Bonus: {signal.bonus_checks}/9
 """
         return msg
     
@@ -197,4 +202,3 @@ Unrealized P&L: ₹{unrealized_pl:+.2f} ({unrealized_pct:+.1f}%)
 Hold Time: {position.get_hold_time_minutes():.0f} min
 """
         return msg
-
