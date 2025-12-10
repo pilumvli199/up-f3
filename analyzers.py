@@ -235,6 +235,7 @@ class VolumeAnalyzer:
     def analyze_volume_trend(df, periods=5):
         """Analyze volume trend from futures candles"""
         if df is None or len(df) < periods + 1:
+            logger.warning(f"⚠️ VOL DEBUG: Insufficient data - df={'None' if df is None else len(df)} rows")
             return {
                 'trend': 'unknown',
                 'avg_volume': 0,
@@ -246,6 +247,9 @@ class VolumeAnalyzer:
         avg = recent.iloc[:-1].mean()
         current = recent.iloc[-1]
         ratio = current / avg if avg > 0 else 1.0
+        
+        # DEBUG: Log actual values
+        logger.debug(f"📊 VOL DEBUG: current={current:.0f}, avg={avg:.0f}, ratio={ratio:.2f}")
         
         trend = 'increasing' if ratio > 1.3 else 'decreasing' if ratio < 0.7 else 'stable'
         
