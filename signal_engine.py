@@ -118,15 +118,12 @@ class SignalGenerator:
         
         primary_vol = volume_spike
         
-        # Count checks: ATM only counts if checked (not skipped)
-        checks_to_evaluate = [primary_ce, primary_vol]
-        if not atm_skipped:
-            checks_to_evaluate.append(primary_atm)
-        
+        # STRICT: Always require 3 checks, no relaxation
+        # If ATM skipped, only CE+Vol can pass = 2/3 (BLOCKED!)
+        checks_to_evaluate = [primary_ce, primary_atm, primary_vol]
         primary_passed = sum(checks_to_evaluate)
-        required_checks = 2 if atm_skipped else MIN_PRIMARY_CHECKS
         
-        if primary_passed < required_checks:
+        if primary_passed < MIN_PRIMARY_CHECKS:
             logger.debug(f"  ❌ CE_BUY: Only {primary_passed}/{MIN_PRIMARY_CHECKS} primary checks")
             return None
         
@@ -155,7 +152,8 @@ class SignalGenerator:
                 confidence += 25
             else:
                 confidence += 20
-        if primary_atm and not atm_skipped:  # Only add if actually checked
+        # ATM: Only add points if actually checked AND passed
+        if primary_atm and not atm_skipped:
             confidence += 20
         if primary_vol: confidence += 15
         
@@ -260,15 +258,12 @@ class SignalGenerator:
         
         primary_vol = volume_spike
         
-        # Count checks: ATM only counts if checked (not skipped)
-        checks_to_evaluate = [primary_pe, primary_vol]
-        if not atm_skipped:
-            checks_to_evaluate.append(primary_atm)
-        
+        # STRICT: Always require 3 checks, no relaxation
+        # If ATM skipped, only PE+Vol can pass = 2/3 (BLOCKED!)
+        checks_to_evaluate = [primary_pe, primary_atm, primary_vol]
         primary_passed = sum(checks_to_evaluate)
-        required_checks = 2 if atm_skipped else MIN_PRIMARY_CHECKS
         
-        if primary_passed < required_checks:
+        if primary_passed < MIN_PRIMARY_CHECKS:
             logger.debug(f"  ❌ PE_BUY: Only {primary_passed}/{MIN_PRIMARY_CHECKS} primary checks")
             return None
         
@@ -297,7 +292,8 @@ class SignalGenerator:
                 confidence += 25
             else:
                 confidence += 20
-        if primary_atm and not atm_skipped:  # Only add if actually checked
+        # ATM: Only add points if actually checked AND passed
+        if primary_atm and not atm_skipped:
             confidence += 20
         if primary_vol: confidence += 15
         
