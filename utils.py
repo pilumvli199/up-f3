@@ -1,8 +1,6 @@
 """
 Utilities: Time, Logging, Validators
-FIXED: Better strike data validation
 """
-
 import pytz
 from datetime import datetime, time
 import logging
@@ -10,7 +8,6 @@ import colorlog
 
 # Timezone
 IST = pytz.timezone('Asia/Kolkata')
-
 
 def setup_logger(name):
     """Setup colored logger"""
@@ -33,43 +30,51 @@ def setup_logger(name):
     
     return logger
 
-
 def get_ist_time():
     """Get current IST time"""
     return datetime.now(IST)
-
 
 def format_time_ist(dt):
     """Format datetime as IST string"""
     return dt.strftime('%I:%M:%S %p IST')
 
-
 def is_premarket():
-    """Check if premarket time (9:10-9:20 AM)"""
+    """Check if premarket time (9:10-9:15 AM)"""
     from config import PREMARKET_START, PREMARKET_END
     now = get_ist_time().time()
     return PREMARKET_START <= now < PREMARKET_END
 
+def is_first_data_time():
+    """Check if it's time for first data collection (9:16 AM)"""
+    from config import FIRST_DATA_TIME
+    now = get_ist_time().time()
+    return now >= FIRST_DATA_TIME and now < time(9, 17)
 
-def is_signal_time():
-    """Check if signal generation time (9:25 AM - 3:15 PM)"""
-    from config import SIGNAL_START, MARKET_CLOSE
+def is_signal_time(warmup_complete=False):
+    """Check if signal generation time WITH warmup validation"""
+    from config import SIGNAL_START
     now = get_ist_time().time()
     cutoff = time(15, 15)
-    return SIGNAL_START <= now < cutoff
-
+    
+    # Time window check
+    if not (SIGNAL_START <= now < cutoff):
+        return False, "Outside signal window (9:21-3:15 PM)"
+    
+    # Warmup check
+    if not warmup_complete:
+        return False, "Warmup in progress"
+    
+    return True, "Ready for signals"
 
 def is_market_open():
     """Check if market is open (9:15 AM - 3:30 PM)"""
     now = get_ist_time().time()
     return time(9, 15) <= now < time(15, 30)
 
-
 def is_market_closed():
     """Check if market is closed"""
     now = get_ist_time().time()
     return now >= time(15, 30) or now < time(9, 10)
-
 
 def get_market_status():
     """Get current market status"""
@@ -78,15 +83,16 @@ def get_market_status():
     
     if current_time < time(9, 10):
         return "CLOSED", "Market opens at 9:10 AM"
-    elif current_time < time(9, 20):
+    elif current_time < time(9, 15):
         return "PREMARKET", "Warmup period"
-    elif current_time < time(9, 25):
-        return "WARMUP", "Signal gen starts at 9:25 AM"
+    elif current_time < time(9, 16):
+        return "MARKET_OPEN", "Waiting for 9:16 first snapshot"
+    elif current_time < time(9, 21):
+        return "WARMUP", "Collecting baseline data"
     elif current_time < time(15, 30):
         return "OPEN", "Market active"
     else:
         return "CLOSED", "Market closed"
-
 
 def validate_price(price):
     """Validate spot/futures price"""
@@ -96,11 +102,9 @@ def validate_price(price):
         return False
     return True
 
-
-def validate_strike_data(strike_data, min_strikes=3):
+def validate_strike_data(strike_data, min_strikes=7):
     """
-    Validate option chain data
-    FIXED: Accept float strikes + validate OI values
+    Validate option chain data - need at least 7 strikes for safety
     """
     if not strike_data or not isinstance(strike_data, dict):
         return False
@@ -122,18 +126,17 @@ def validate_strike_data(strike_data, min_strikes=3):
         if not all(f in data for f in required):
             return False
         
-        # ✅ Check if values are numeric
+        # Check if values are numeric
         for field in required:
             if not isinstance(data[field], (int, float)):
                 return False
     
-    # ✅ Check if at least some OI exists
+    # Check if at least some OI exists
     total_oi = sum(d['ce_oi'] + d['pe_oi'] for d in strike_data.values())
     if total_oi == 0:
         return False
     
     return True
-
 
 def validate_candle_data(df, min_candles=10):
     """Validate futures candle data"""
