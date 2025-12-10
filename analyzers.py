@@ -1,6 +1,6 @@
 """
 Market Analyzers: OI, Volume, Technical, Market Structure
-FIXED: Better PCR calculation, zero handling
+FIXED: 5 strikes deep analysis, AND logic for unwinding, VWAP validation
 """
 
 import pandas as pd
@@ -13,11 +13,11 @@ logger = setup_logger("analyzers")
 
 # ==================== OI Analyzer ====================
 class OIAnalyzer:
-    """Open Interest analysis"""
+    """Open Interest analysis with 5 strikes deep focus"""
     
     @staticmethod
     def calculate_total_oi(strike_data):
-        """Calculate total CE/PE OI"""
+        """Calculate total CE/PE OI (uses ALL 11 strikes)"""
         if not strike_data:
             return 0, 0
         
@@ -27,27 +27,65 @@ class OIAnalyzer:
         return total_ce, total_pe
     
     @staticmethod
+    def calculate_deep_analysis_oi(strike_data, atm_strike):
+        """
+        Calculate CE/PE OI for DEEP ANALYSIS strikes only (5 strikes)
+        ATM ± 2 = 5 strikes where 90% institutional money flows
+        """
+        deep_strikes = get_deep_analysis_strikes(atm_strike)
+        
+        deep_ce = 0
+        deep_pe = 0
+        
+        for strike in deep_strikes:
+            if strike in strike_data:
+                deep_ce += strike_data[strike].get('ce_oi', 0)
+                deep_pe += strike_data[strike].get('pe_oi', 0)
+        
+        return deep_ce, deep_pe, deep_strikes
+    
+    @staticmethod
     def calculate_pcr(total_pe, total_ce):
-        """Calculate Put-Call Ratio with zero handling"""
+        """Calculate Put-Call Ratio with neutral default"""
         if total_ce == 0:
             if total_pe == 0:
-                return 0.0  # No data
+                return 1.0  # Neutral (both zero)
             else:
-                return 10.0  # Very high PCR
+                return 10.0  # Very high PCR (cap)
         
         pcr = total_pe / total_ce
-        return round(pcr, 2)
+        return round(min(pcr, 10.0), 2)  # Cap at 10.0
     
     @staticmethod
     def detect_unwinding(ce_5m, ce_15m, pe_5m, pe_15m):
-        """Detect CE/PE unwinding patterns"""
-        ce_unwinding = ce_15m < -OI_THRESHOLD_MEDIUM or ce_5m < -OI_THRESHOLD_MEDIUM
-        ce_strength = 'strong' if ce_15m < -OI_THRESHOLD_STRONG else 'medium' if ce_15m < -OI_THRESHOLD_MEDIUM else 'weak'
+        """
+        Detect CE/PE unwinding - AND LOGIC (both timeframes required)
+        This ensures quality signals, not just noise
+        """
+        # CE unwinding - BOTH 5m AND 15m must show unwinding
+        ce_unwinding = (ce_15m < -MIN_OI_15M_FOR_ENTRY and ce_5m < -MIN_OI_5M_FOR_ENTRY)
         
-        pe_unwinding = pe_15m < -OI_THRESHOLD_MEDIUM or pe_5m < -OI_THRESHOLD_MEDIUM
-        pe_strength = 'strong' if pe_15m < -OI_THRESHOLD_STRONG else 'medium' if pe_15m < -OI_THRESHOLD_MEDIUM else 'weak'
+        # Strength based on 15m (primary timeframe)
+        if ce_15m < -STRONG_OI_15M_THRESHOLD and ce_5m < -STRONG_OI_5M_THRESHOLD:
+            ce_strength = 'strong'
+        elif ce_15m < -MIN_OI_15M_FOR_ENTRY and ce_5m < -MIN_OI_5M_FOR_ENTRY:
+            ce_strength = 'medium'
+        else:
+            ce_strength = 'weak'
         
-        multi_tf = (ce_5m < -1.0 and ce_15m < -1.0) or (pe_5m < -1.0 and pe_15m < -1.0)
+        # PE unwinding - BOTH 5m AND 15m must show unwinding
+        pe_unwinding = (pe_15m < -MIN_OI_15M_FOR_ENTRY and pe_5m < -MIN_OI_5M_FOR_ENTRY)
+        
+        # Strength
+        if pe_15m < -STRONG_OI_15M_THRESHOLD and pe_5m < -STRONG_OI_5M_THRESHOLD:
+            pe_strength = 'strong'
+        elif pe_15m < -MIN_OI_15M_FOR_ENTRY and pe_5m < -MIN_OI_5M_FOR_ENTRY:
+            pe_strength = 'medium'
+        else:
+            pe_strength = 'weak'
+        
+        # Multi-timeframe confirmation (both showing negative)
+        multi_tf = (ce_5m < -2.0 and ce_15m < -3.0) or (pe_5m < -2.0 and pe_15m < -3.0)
         
         return {
             'ce_unwinding': ce_unwinding,
@@ -59,7 +97,7 @@ class OIAnalyzer:
     
     @staticmethod
     def get_atm_data(strike_data, atm_strike):
-        """Get ATM strike data"""
+        """Get ATM strike data (current values only)"""
         return strike_data.get(atm_strike, {
             'ce_oi': 0,
             'pe_oi': 0,
@@ -68,6 +106,92 @@ class OIAnalyzer:
             'ce_ltp': 0,
             'pe_ltp': 0
         })
+    
+    @staticmethod
+    def get_atm_oi_changes(strike_data, atm_strike, previous_strike_data=None):
+        """
+        Get ATM strike data WITH OI change calculations
+        Compares current vs previous scan
+        """
+        current = strike_data.get(atm_strike, {
+            'ce_oi': 0,
+            'pe_oi': 0,
+            'ce_vol': 0,
+            'pe_vol': 0,
+            'ce_ltp': 0,
+            'pe_ltp': 0
+        })
+        
+        ce_change_pct = 0.0
+        pe_change_pct = 0.0
+        
+        if previous_strike_data:
+            previous = previous_strike_data.get(atm_strike, {
+                'ce_oi': 0,
+                'pe_oi': 0
+            })
+            
+            # CE OI change
+            prev_ce_oi = previous.get('ce_oi', 0)
+            curr_ce_oi = current.get('ce_oi', 0)
+            
+            if prev_ce_oi > 0:
+                ce_diff = curr_ce_oi - prev_ce_oi
+                ce_change_pct = (ce_diff / prev_ce_oi) * 100
+            elif curr_ce_oi > 0:
+                ce_change_pct = 100.0
+            
+            # PE OI change
+            prev_pe_oi = previous.get('pe_oi', 0)
+            curr_pe_oi = current.get('pe_oi', 0)
+            
+            if prev_pe_oi > 0:
+                pe_diff = curr_pe_oi - prev_pe_oi
+                pe_change_pct = (pe_diff / prev_pe_oi) * 100
+            elif curr_pe_oi > 0:
+                pe_change_pct = 100.0
+        
+        return {
+            'ce_oi': current.get('ce_oi', 0),
+            'pe_oi': current.get('pe_oi', 0),
+            'ce_vol': current.get('ce_vol', 0),
+            'pe_vol': current.get('pe_vol', 0),
+            'ce_ltp': current.get('ce_ltp', 0),
+            'pe_ltp': current.get('pe_ltp', 0),
+            'ce_change_pct': round(ce_change_pct, 1),
+            'pe_change_pct': round(pe_change_pct, 1),
+            'has_previous_data': previous_strike_data is not None,
+            'atm_strike': atm_strike
+        }
+    
+    @staticmethod
+    def check_oi_reversal(signal_type, oi_changes_history, threshold=EXIT_OI_REVERSAL_THRESHOLD):
+        """
+        Check OI reversal with SUSTAINED building (not single candle spike)
+        Requires EXIT_OI_CONFIRMATION_CANDLES consecutive candles
+        """
+        if not oi_changes_history or len(oi_changes_history) < EXIT_OI_CONFIRMATION_CANDLES:
+            return False, 'none', 0.0, "Insufficient data"
+        
+        # Get last N candles
+        recent = oi_changes_history[-EXIT_OI_CONFIRMATION_CANDLES:]
+        current = recent[-1]
+        
+        # Count sustained building
+        building_count = sum(1 for oi in recent if oi > threshold)
+        
+        # Strong reversal: ALL recent candles building
+        if building_count >= EXIT_OI_CONFIRMATION_CANDLES:
+            avg_building = sum(recent) / len(recent)
+            strength = 'strong' if avg_building > 5.0 else 'medium'
+            return True, strength, avg_building, f"{signal_type} sustained building: {building_count}/{len(recent)} candles"
+        
+        # Very strong single spike (exception)
+        if current > EXIT_OI_SPIKE_THRESHOLD:
+            return True, 'spike', current, f"{signal_type} spike: {current:.1f}%"
+        
+        # Not confirmed
+        return False, 'none', current, f"{signal_type} OI change: {current:.1f}% (not sustained)"
 
 
 # ==================== Volume Analyzer ====================
@@ -76,7 +200,7 @@ class VolumeAnalyzer:
     
     @staticmethod
     def calculate_total_volume(strike_data):
-        """Calculate total CE/PE volume"""
+        """Calculate total CE/PE volume (uses ALL 11 strikes)"""
         if not strike_data:
             return 0, 0
         
@@ -109,7 +233,7 @@ class VolumeAnalyzer:
     
     @staticmethod
     def analyze_volume_trend(df, periods=5):
-        """Analyze volume trend"""
+        """Analyze volume trend from futures candles"""
         if df is None or len(df) < periods + 1:
             return {
                 'trend': 'unknown',
@@ -139,7 +263,7 @@ class TechnicalAnalyzer:
     
     @staticmethod
     def calculate_vwap(df):
-        """Calculate VWAP"""
+        """Calculate VWAP from futures candles"""
         if df is None or len(df) == 0:
             return None
         
@@ -163,8 +287,55 @@ class TechnicalAnalyzer:
         return round(price - vwap, 2)
     
     @staticmethod
+    def validate_signal_with_vwap(signal_type, spot, vwap, atr):
+        """
+        Validate if signal should be taken based on VWAP distance
+        BLOCKING CHECK - rejects signals too far from fair value
+        """
+        if not vwap or not spot or not atr:
+            return False, "Missing VWAP/Price data", 0
+        
+        distance = spot - vwap
+        
+        # Calculate buffer
+        if VWAP_STRICT_MODE:
+            buffer = atr * VWAP_DISTANCE_MAX_ATR_MULTIPLE
+        else:
+            buffer = VWAP_BUFFER
+        
+        if signal_type == "CE_BUY":
+            # CE buy: Price should be near or above VWAP
+            if distance < -buffer:
+                return False, f"Price {abs(distance):.0f} pts below VWAP (too far)", 0
+            elif distance > buffer * 3:
+                return False, f"Price {distance:.0f} pts above VWAP (overextended)", 0
+            else:
+                # Score based on proximity
+                if distance > 0:
+                    score = min(100, 80 + (distance / buffer * 20))
+                else:
+                    score = max(60, 80 - (abs(distance) / buffer * 20))
+                return True, f"VWAP distance OK: {distance:+.0f} pts", int(score)
+        
+        elif signal_type == "PE_BUY":
+            # PE buy: Price should be near or below VWAP
+            if distance > buffer:
+                return False, f"Price {distance:.0f} pts above VWAP (too far)", 0
+            elif distance < -buffer * 3:
+                return False, f"Price {abs(distance):.0f} pts below VWAP (overextended)", 0
+            else:
+                # Score based on proximity
+                if distance < 0:
+                    score = min(100, 80 + (abs(distance) / buffer * 20))
+                else:
+                    score = max(60, 80 - (distance / buffer * 20))
+                return True, f"VWAP distance OK: {distance:+.0f} pts", int(score)
+        
+        return False, "Unknown signal type", 0
+    
+    @staticmethod
     def calculate_atr(df, period=ATR_PERIOD):
-        """Calculate ATR"""
+        """Calculate ATR from futures candles"""
         if df is None or len(df) < period:
             return ATR_FALLBACK
         
@@ -200,10 +371,10 @@ class TechnicalAnalyzer:
             rejection = False
             rejection_type = None
             
-            if upper_wick > body * 2 and body > 0:
+            if upper_wick > body * EXIT_CANDLE_REJECTION_MULTIPLIER and body > 0:
                 rejection = True
                 rejection_type = 'upper'
-            elif lower_wick > body * 2 and body > 0:
+            elif lower_wick > body * EXIT_CANDLE_REJECTION_MULTIPLIER and body > 0:
                 rejection = True
                 rejection_type = 'lower'
             
@@ -272,7 +443,7 @@ class MarketAnalyzer:
     
     @staticmethod
     def calculate_max_pain(strike_data, spot_price):
-        """Calculate max pain strike"""
+        """Calculate max pain strike (uses all 11 strikes)"""
         if not strike_data:
             return 0, 0.0
         
@@ -303,11 +474,11 @@ class MarketAnalyzer:
     
     @staticmethod
     def detect_gamma_zone():
-        """Check if expiry day"""
+        """Check if expiry day (weekly options)"""
         try:
-            from config import get_next_tuesday_expiry
+            from config import get_next_weekly_expiry
             today = datetime.now(IST).date()
-            expiry = datetime.strptime(get_next_tuesday_expiry(), '%Y-%m-%d').date()
+            expiry = datetime.strptime(get_next_weekly_expiry(), '%Y-%m-%d').date()
             return today == expiry
         except:
             return False
