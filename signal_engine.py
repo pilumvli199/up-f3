@@ -103,13 +103,15 @@ class SignalGenerator:
         logger.debug(f"  ✅ VWAP check passed: {vwap_reason} (Score: {vwap_score})")
         
         # STEP 2: Primary checks (STRICTER - both TF required)
-        primary_ce = ce_total_15m < -MIN_OI_15M_FOR_ENTRY and ce_total_5m < -MIN_OI_5M_FOR_ENTRY and has_15m_total and has_5m_total
+        # CE_BUY = Buy Calls when PUTs are unwinding (bullish move expected!)
+        primary_ce = pe_total_15m < -MIN_OI_15M_FOR_ENTRY and pe_total_5m < -MIN_OI_5M_FOR_ENTRY and has_15m_total and has_5m_total
         
         # ATM check - ONLY if we have 15m data (not blocking on ATM shifts)
         primary_atm = False
         atm_skipped = False
         
-        if has_15m_atm and atm_ce_15m < -ATM_OI_THRESHOLD:
+        # For CE_BUY, check PE ATM unwinding (puts being sold = bullish)
+        if has_15m_atm and atm_pe_15m < -ATM_OI_THRESHOLD:
             primary_atm = True
         elif not has_15m_atm:
             logger.debug(f"  ⚠️ ATM check skipped (no 15m data after ATM shift)")
@@ -243,13 +245,15 @@ class SignalGenerator:
         logger.debug(f"  ✅ VWAP check passed: {vwap_reason} (Score: {vwap_score})")
         
         # STEP 2: Primary checks (STRICTER - both TF required)
-        primary_pe = pe_total_15m < -MIN_OI_15M_FOR_ENTRY and pe_total_5m < -MIN_OI_5M_FOR_ENTRY and has_15m_total and has_5m_total
+        # PE_BUY = Buy Puts when CALLs are unwinding (bearish move expected!)
+        primary_pe = ce_total_15m < -MIN_OI_15M_FOR_ENTRY and ce_total_5m < -MIN_OI_5M_FOR_ENTRY and has_15m_total and has_5m_total
         
         # ATM check - ONLY if we have 15m data (not blocking on ATM shifts)
         primary_atm = False
         atm_skipped = False
         
-        if has_15m_atm and atm_pe_15m < -ATM_OI_THRESHOLD:
+        # For PE_BUY, check CE ATM unwinding (calls being sold = bearish)
+        if has_15m_atm and atm_ce_15m < -ATM_OI_THRESHOLD:
             primary_atm = True
         elif not has_15m_atm:
             logger.debug(f"  ⚠️ ATM check skipped (no 15m data after ATM shift)")
