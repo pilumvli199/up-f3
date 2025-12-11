@@ -304,12 +304,18 @@ class VolumeAnalyzer:
         return round(max(0.2, min(ratio, 5.0)), 2)
     
     @staticmethod
-    def analyze_volume_trend(df, periods=5):
+    def analyze_volume_trend(df, periods=5, live_volume=None):
         """
-        🔧 FIXED: Analyze volume trend from futures candles
-        Now properly handles volume data and validates calculations
+        🔧 FIXED: Analyze volume trend with OPTIONAL live volume override
+        
+        Parameters:
+        - df: Historical candle data (closed candles only)
+        - periods: Number of candles to average
+        - live_volume: (OPTIONAL) Current LIVE volume from quote API
+        
+        If live_volume provided, uses it instead of last candle's volume
         """
-        if df is None or len(df) < periods + 1:
+        if df is None or len(df) < periods:
             logger.warning(f"⚠️ VOL TREND: Insufficient data - df={'None' if df is None else len(df)} rows")
             return {
                 'trend': 'unknown',
@@ -319,12 +325,32 @@ class VolumeAnalyzer:
             }
         
         try:
-            # Get recent volumes (exclude current candle for average)
-            recent = df['volume'].tail(periods + 1)
+            # Get recent volumes (for average calculation)
+            # Use last N candles EXCLUDING current if live_volume provided
+            if live_volume is not None:
+                # Use historical candles for average (last N CLOSED candles)
+                recent_for_avg = df['volume'].tail(periods)
+                avg = recent_for_avg.mean()
+                current = live_volume  # Use LIVE volume
+                source = "LIVE"
+                
+                logger.info(f"📊 VOL CALC (LIVE MODE):")
+                logger.info(f"   Avg from {periods} closed candles: {avg:,.0f}")
+                logger.info(f"   Current LIVE volume: {current:,.0f}")
+            else:
+                # Traditional method: use last closed candle
+                recent = df['volume'].tail(periods + 1)
+                avg = recent.iloc[:-1].mean()
+                current = recent.iloc[-1]
+                source = "CANDLE"
+                
+                logger.info(f"📊 VOL CALC (CANDLE MODE):")
+                logger.info(f"   Avg from {periods} candles: {avg:,.0f}")
+                logger.info(f"   Current from last candle: {current:,.0f}")
             
-            # 🆕 VALIDATE: Check if volume is actually numeric
-            if not pd.api.types.is_numeric_dtype(recent):
-                logger.error(f"❌ VOL TREND: Volume not numeric! Type: {recent.dtype}")
+            # Validate data type
+            if not pd.api.types.is_numeric_dtype(pd.Series([avg, current])):
+                logger.error(f"❌ VOL TREND: Volume not numeric!")
                 return {
                     'trend': 'unknown',
                     'avg_volume': 0,
@@ -332,10 +358,7 @@ class VolumeAnalyzer:
                     'ratio': 1.0
                 }
             
-            avg = recent.iloc[:-1].mean()
-            current = recent.iloc[-1]
-            
-            # 🆕 VALIDATE: Check for NaN or invalid values
+            # Check for NaN or invalid values
             if pd.isna(avg) or pd.isna(current) or avg <= 0:
                 logger.error(f"❌ VOL TREND: Invalid values - avg={avg}, current={current}")
                 return {
@@ -347,10 +370,8 @@ class VolumeAnalyzer:
             
             ratio = current / avg
             
-            # 🆕 DETAILED DEBUG at INFO level
-            logger.info(f"📊 VOL TREND CALC:")
-            logger.info(f"   Last {periods} candles avg: {avg:,.0f}")
-            logger.info(f"   Current candle: {current:,.0f}")
+            # Detailed logging
+            logger.info(f"   Source: {source}")
             logger.info(f"   Ratio: {ratio:.2f}x")
             logger.info(f"   DataFrame shape: {df.shape}, Last 3 volumes: {df['volume'].tail(3).tolist()}")
             
@@ -360,7 +381,8 @@ class VolumeAnalyzer:
                 'trend': trend,
                 'avg_volume': round(float(avg), 2),
                 'current_volume': round(float(current), 2),
-                'ratio': round(float(ratio), 2)
+                'ratio': round(float(ratio), 2),
+                'source': source
             }
             
         except Exception as e:
