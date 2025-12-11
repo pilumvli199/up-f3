@@ -1,7 +1,6 @@
 """
 NIFTY Trading Bot - Main Orchestrator
-COMPLETE: Monthly futures + Weekly options, 11 strikes fetch + 5 deep analysis
-Live futures price for entry/exit, proper startup notification
+FIXED: Conflicting OI detection, ATM validation, volume debug
 """
 
 import asyncio
@@ -15,7 +14,7 @@ from signal_engine import SignalGenerator, SignalValidator
 from position_tracker import PositionTracker
 from alerts import TelegramBot, MessageFormatter
 
-BOT_VERSION = "4.0.0-FINAL"
+BOT_VERSION = "4.1.0-FIXED"
 
 logger = setup_logger("main")
 
@@ -74,6 +73,15 @@ class NiftyTradingBot:
 🚀 <b>NIFTY BOT v{BOT_VERSION} STARTED</b>
 
 ━━━━━━━━━━━━━━━━━━━━
+🔧 <b>FIXES IN THIS VERSION</b>
+━━━━━━━━━━━━━━━━━━━━
+
+✅ Conflicting OI Detection
+✅ ATM Data Validation
+✅ Volume Calculation Debug
+✅ Better Error Logging
+
+━━━━━━━━━━━━━━━━━━━━
 📅 <b>CONTRACT DETAILS</b>
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -93,7 +101,7 @@ class NiftyTradingBot:
 <b>MONTHLY Futures Data:</b>
 ✅ Candles for VWAP/ATR/EMA
 ✅ LIVE price for Entry/Exit decisions
-✅ Volume analysis
+✅ Volume analysis (DEBUG MODE ON)
 
 <b>Spot Price:</b>
 ✅ ATM strike calculation only
@@ -129,6 +137,7 @@ class NiftyTradingBot:
 • BOTH timeframes must show unwinding
 • ATM OI Threshold: &lt; -{ATM_OI_THRESHOLD}%
 • Volume Spike: ≥ {VOL_SPIKE_MULTIPLIER}x average
+• 🆕 NO Conflicting OI (both building blocked)
 
 <b>Strong Signal:</b>
 • 5m OI: &lt; -{STRONG_OI_5M_THRESHOLD}%
@@ -326,6 +335,13 @@ class NiftyTradingBot:
         logger.info(f"  15m: CE={ce_15m:+.1f}% PE={pe_15m:+.1f}% {'✅' if has_15m else '⏳'}")
         logger.info(f"  ATM {atm}: CE={atm_info['ce_change_pct']:+.1f}% PE={atm_info['pe_change_pct']:+.1f}%")
         
+        # 🆕 VALIDATE ATM DATA
+        atm_valid, atm_reason = self.oi_analyzer.validate_atm_data(atm_data)
+        if not atm_valid:
+            logger.warning(f"⚠️ ATM DATA ISSUE: {atm_reason}")
+            logger.warning(f"   CE LTP: ₹{atm_data.get('ce_ltp', 0):.2f}, PE LTP: ₹{atm_data.get('pe_ltp', 0):.2f}")
+            logger.warning(f"   CE OI: {atm_data.get('ce_oi', 0):,.0f}, PE OI: {atm_data.get('pe_oi', 0):,.0f}")
+        
         self.previous_strike_data = strike_data.copy()
         
         # ========== STEP 4: RUN ANALYSIS ==========
@@ -339,14 +355,30 @@ class NiftyTradingBot:
         candle = self.technical_analyzer.analyze_candle(futures_df)
         momentum = self.technical_analyzer.detect_momentum(futures_df)
         
+        # 🆕 VOLUME ANALYSIS with detailed logging
         vol_trend = self.volume_analyzer.analyze_volume_trend(futures_df)
+        logger.info(f"📊 VOLUME ANALYSIS RESULT:")
+        logger.info(f"   Trend: {vol_trend['trend']}")
+        logger.info(f"   Current: {vol_trend['current_volume']:,.0f}")
+        logger.info(f"   Average: {vol_trend['avg_volume']:,.0f}")
+        logger.info(f"   Ratio: {vol_trend['ratio']:.2f}x")
+        
         vol_spike, vol_ratio = self.volume_analyzer.detect_volume_spike(
             vol_trend['current_volume'], vol_trend['avg_volume']
         )
+        
         order_flow = self.volume_analyzer.calculate_order_flow(strike_data)
         
         gamma = self.market_analyzer.detect_gamma_zone()
         unwinding = self.oi_analyzer.detect_unwinding(ce_5m, ce_15m, pe_5m, pe_15m)
+        
+        # 🆕 CHECK CONFLICTING OI
+        is_conflicting, conflict_reason = self.oi_analyzer.detect_conflicting_oi(
+            ce_5m, ce_15m, pe_5m, pe_15m
+        )
+        
+        if is_conflicting:
+            logger.warning(f"⚠️ CONFLICTING OI DETECTED: {conflict_reason}")
         
         if ce_15m < -STRONG_OI_15M_THRESHOLD or pe_15m < -STRONG_OI_15M_THRESHOLD:
             oi_strength = 'strong'
@@ -361,6 +393,8 @@ class NiftyTradingBot:
         logger.info(f"  🔄 OI Changes (Total - 11 strikes):")
         logger.info(f"     5m:  CE {ce_5m:+.1f}% | PE {pe_5m:+.1f}%")
         logger.info(f"     15m: CE {ce_15m:+.1f}% | PE {pe_15m:+.1f}% (Strength: {oi_strength})")
+        if is_conflicting:
+            logger.info(f"  ⚠️ OI Status: {conflict_reason}")
         logger.info(f"  📊 Volume: {vol_ratio:.1f}x {'🔥SPIKE' if vol_spike else ''}")
         logger.info(f"  💨 Flow: {order_flow:.2f}, Momentum: {momentum['direction']}")
         logger.info(f"  🎯 Gamma Zone: {gamma}")
@@ -441,6 +475,16 @@ class NiftyTradingBot:
         
         if self.exit_triggered_this_cycle:
             logger.info(f"\n⏸️ EXIT TRIGGERED THIS CYCLE - Skipping entry check")
+            return
+        
+        # 🆕 BLOCK SIGNALS IF CONFLICTING OI
+        if is_conflicting:
+            logger.info(f"\n🚫 SIGNALS BLOCKED - {conflict_reason}")
+            return
+        
+        # 🆕 BLOCK SIGNALS IF ATM DATA INVALID
+        if not atm_valid:
+            logger.info(f"\n🚫 SIGNALS BLOCKED - {atm_reason}")
             return
         
         signal_allowed, signal_msg = is_signal_time(warmup_complete=full_warmup or early_warmup)
