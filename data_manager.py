@@ -1,6 +1,6 @@
 """
 Data Manager: Upstox API + Redis Memory
-FIXED: LIVE volume fetching, timestamp debugging, proper candle handling
+V2 COMPLETE FIX: Volume delta tracking, candle fallback, live VWAP, graceful degradation
 """
 
 import asyncio
@@ -133,7 +133,7 @@ class UpstoxClient:
                 logger.error("❌ NIFTY spot not found")
                 return False
             
-            # Find MONTHLY futures (SMART DETECTION)
+            # Find MONTHLY futures
             now = datetime.now(IST)
             all_futures = []
             
@@ -168,28 +168,24 @@ class UpstoxClient:
                 logger.error("❌ No futures contracts found")
                 return False
             
-            # Sort by expiry date
             all_futures.sort(key=lambda x: x['expiry'])
             
-            # Select MONTHLY contract (>10 days)
             monthly_futures = None
-            
             for fut in all_futures:
                 if fut['days_to_expiry'] > 10:
                     monthly_futures = fut
                     break
             
-            # Fallback: nearest
             if not monthly_futures:
                 monthly_futures = all_futures[0]
-                logger.warning(f"⚠️ Using nearest futures (no contract > 10 days found)")
+                logger.warning(f"⚠️ Using nearest futures")
             
             self.futures_key = monthly_futures['key']
             self.futures_expiry = monthly_futures['expiry']
             self.futures_symbol = monthly_futures['symbol']
             
             logger.info(f"✅ Futures (MONTHLY): {monthly_futures['symbol']}")
-            logger.info(f"   Expiry: {monthly_futures['expiry'].strftime('%Y-%m-%d %A')} ({monthly_futures['days_to_expiry']} days)")
+            logger.info(f"   Expiry: {monthly_futures['expiry'].strftime('%Y-%m-%d')} ({monthly_futures['days_to_expiry']} days)")
             
             return True
         
@@ -212,26 +208,23 @@ class UpstoxClient:
         
         quotes = data['data']
         
-        # Try exact match
         if instrument_key in quotes:
             return quotes[instrument_key]
         
-        # Try colon format
         alt_key = instrument_key.replace('|', ':')
         if alt_key in quotes:
             return quotes[alt_key]
         
-        # Try segment match
         segment = instrument_key.split('|')[0] if '|' in instrument_key else instrument_key.split(':')[0]
         for key in quotes.keys():
             if key.startswith(segment):
                 return quotes[key]
         
-        logger.error(f"❌ Instrument not found in: {list(quotes.keys())[:3]}")
+        logger.error(f"❌ Instrument not found")
         return None
     
     async def get_candles(self, instrument_key, interval='1minute'):
-        """Get historical candles (for technical analysis only)"""
+        """Get historical candles"""
         if not instrument_key:
             return None
         
@@ -256,17 +249,15 @@ class UpstoxClient:
         data = await self._request(url)
         
         if not data:
-            logger.error("❌ Option chain API returned None")
             return None
         
         if 'data' not in data:
-            logger.error(f"❌ No 'data' key. Keys: {list(data.keys())}")
             return None
         
         return data['data']
 
 
-# ==================== Redis Brain ====================
+# ==================== Redis Brain (same as before) ====================
 class RedisBrain:
     """Memory manager with 24 hour TTL"""
     
@@ -332,7 +323,6 @@ class RedisBrain:
         if not past_str:
             past_str = self.memory.get(key)
         
-        # Try tolerance
         if not past_str:
             for offset in [-1, 1, -2, 2]:
                 alt = target + timedelta(minutes=offset)
@@ -513,24 +503,46 @@ class RedisBrain:
         """Skip previous day data"""
         if self.premarket_loaded:
             return
-        logger.info("📚 Skipping previous day data (fresh start at 9:16)")
+        logger.info("📚 Skipping previous day data")
         self.premarket_loaded = True
 
 
-# ==================== Data Fetcher ====================
+# ==================== Data Fetcher V2 ====================
 class DataFetcher:
-    """High-level data fetching with LIVE volume support"""
+    """
+    🔥 V2 COMPLETE FIX:
+    - Volume delta tracking
+    - Candle freeze detection with fallback
+    - Live VWAP calculation
+    - Graceful degradation
+    """
     
     def __init__(self, client):
         self.client = client
+        
+        # Candle tracking
         self.last_candle_timestamp = None
         self.candle_repeat_count = 0
+        self.candle_frozen = False
+        self.candle_freeze_start = None
+        
+        # Volume tracking (for delta calculation)
+        self.previous_cumulative_volume = 0
+        self.previous_volume_time = None
+        self.volume_history = []  # Store last 10 deltas
+        
+        # Live VWAP tracking
+        self.live_vwap = None
+        self.vwap_cumulative_vol_price = 0
+        self.vwap_cumulative_volume = 0
+        
+        # Live price history (for synthetic ATR)
+        self.live_price_history = []
     
     async def fetch_spot(self):
-        """Fetch spot price (for ATM calculation)"""
+        """Fetch spot price"""
         try:
             if not self.client.spot_key:
-                logger.error("❌ Spot key missing")
                 return None
             
             data = await self.client.get_quote(self.client.spot_key)
@@ -540,7 +552,6 @@ class DataFetcher:
             
             ltp = data.get('last_price')
             if not ltp:
-                logger.error(f"❌ No 'last_price'. Keys: {list(data.keys())}")
                 return None
             
             return float(ltp)
@@ -551,7 +562,7 @@ class DataFetcher:
     
     async def fetch_futures_candles(self):
         """
-        🔧 FIXED: Fetch MONTHLY futures candles + detect timestamp freezing
+        🔧 FIXED: Fetch candles with freeze detection
         """
         try:
             if not self.client.futures_key:
@@ -566,15 +577,13 @@ class DataFetcher:
             if not candles:
                 return None
             
-            # Handle both list and dict formats
+            # Parse candles
             if isinstance(candles[0], dict):
                 df = pd.DataFrame(candles)
                 required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
                 if not all(col in df.columns for col in required_cols):
-                    logger.error(f"❌ Missing columns. Available: {df.columns.tolist()}")
                     return None
                 
-                # Convert types explicitly
                 df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
                 df['open'] = pd.to_numeric(df['open'], errors='coerce')
                 df['high'] = pd.to_numeric(df['high'], errors='coerce')
@@ -585,51 +594,71 @@ class DataFetcher:
             
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             
-            # 🆕 TIMESTAMP FREEZE DETECTION
+            # 🆕 FREEZE DETECTION
             latest_timestamp = df['timestamp'].iloc[-1]
+            current_time = datetime.now(IST)
             
             if self.last_candle_timestamp == latest_timestamp:
                 self.candle_repeat_count += 1
-                logger.warning(f"⚠️ CANDLE FROZEN! Same timestamp repeated {self.candle_repeat_count} times: {latest_timestamp}")
+                
+                if not self.candle_frozen and self.candle_repeat_count >= 5:
+                    self.candle_frozen = True
+                    self.candle_freeze_start = current_time
+                    logger.error(f"🚨 CANDLE API FROZEN! Timestamp stuck at {latest_timestamp}")
+                    logger.error(f"   Switching to LIVE DATA MODE...")
+                elif self.candle_frozen:
+                    freeze_duration = (current_time - self.candle_freeze_start).total_seconds() / 60
+                    logger.warning(f"⚠️ CANDLE FROZEN for {freeze_duration:.1f} min (repeat #{self.candle_repeat_count})")
             else:
                 if self.candle_repeat_count > 0:
                     logger.info(f"✅ Candle updated after {self.candle_repeat_count} repeats")
+                if self.candle_frozen:
+                    logger.info(f"✅ CANDLE API RECOVERED!")
+                    
                 self.candle_repeat_count = 0
+                self.candle_frozen = False
+                self.candle_freeze_start = None
                 self.last_candle_timestamp = latest_timestamp
             
-            # 🆕 DETAILED CANDLE DEBUG
-            logger.info(f"📊 CANDLE DEBUG:")
-            logger.info(f"   Total bars: {len(df)}")
-            logger.info(f"   Latest candle time: {latest_timestamp}")
-            logger.info(f"   Latest close: ₹{df['close'].iloc[-1]:.2f}")
-            logger.info(f"   Latest volume: {df['volume'].iloc[-1]:,.0f}")
-            logger.info(f"   Last 3 timestamps: {df['timestamp'].tail(3).dt.strftime('%H:%M:%S').tolist()}")
+            # Log candle status
+            if not self.candle_frozen:
+                logger.info(f"📊 CANDLE STATUS: Active (Latest: {latest_timestamp.strftime('%H:%M')})")
+            else:
+                logger.warning(f"⚠️ CANDLE STATUS: FROZEN MODE - Using live data only")
             
             return df
         
         except Exception as e:
-            logger.error(f"❌ Futures candles error: {e}", exc_info=True)
+            logger.error(f"❌ Futures candles error: {e}")
             return None
     
     async def fetch_futures_ltp(self):
-        """Fetch MONTHLY futures LIVE price (for entry/exit decisions)"""
+        """Fetch LIVE futures price"""
         try:
             if not self.client.futures_key:
-                logger.error("❌ Futures key missing")
                 return None
             
             data = await self.client.get_quote(self.client.futures_key)
             
             if not data:
-                logger.error("❌ Futures quote returned None")
                 return None
             
             ltp = data.get('last_price')
             if not ltp:
-                logger.error(f"❌ No 'last_price' in futures quote. Keys: {list(data.keys())}")
                 return None
             
-            return float(ltp)
+            price = float(ltp)
+            
+            # Track for synthetic ATR calculation
+            self.live_price_history.append({
+                'price': price,
+                'time': datetime.now(IST)
+            })
+            
+            # Keep only last 20 prices
+            self.live_price_history = self.live_price_history[-20:]
+            
+            return price
             
         except Exception as e:
             logger.error(f"❌ Futures LTP error: {e}")
@@ -637,38 +666,119 @@ class DataFetcher:
     
     async def fetch_futures_live_volume(self):
         """
-        🆕 FETCH LIVE VOLUME from quote API (not candles!)
-        This gets TODAY'S cumulative volume, NOT per-candle
+        🆕 FETCH LIVE VOLUME with DELTA calculation
+        Returns: (cumulative_volume, delta_volume, avg_delta)
         """
         try:
             if not self.client.futures_key:
-                return None
+                return None, None, None
             
             data = await self.client.get_quote(self.client.futures_key)
             
             if not data:
-                return None
+                return None, None, None
             
-            # Get volume from quote
-            volume = data.get('volume', 0)
+            cumulative_volume = data.get('volume', 0)
             
-            if volume == 0:
-                logger.warning("⚠️ Live volume = 0 from quote API")
-                return None
+            if cumulative_volume == 0:
+                logger.warning("⚠️ Live volume = 0")
+                return None, None, None
             
-            logger.info(f"📊 LIVE VOLUME from quote: {volume:,.0f}")
+            current_time = datetime.now(IST)
+            cumulative_volume = float(cumulative_volume)
             
-            return float(volume)
+            # 🔥 CALCULATE DELTA (1-minute volume)
+            delta_volume = None
+            if self.previous_cumulative_volume > 0:
+                delta_volume = cumulative_volume - self.previous_cumulative_volume
+                
+                # Store delta in history
+                self.volume_history.append({
+                    'delta': delta_volume,
+                    'time': current_time
+                })
+                
+                # Keep only last 10 deltas
+                self.volume_history = self.volume_history[-10:]
+            
+            # Calculate average delta
+            avg_delta = None
+            if len(self.volume_history) >= 3:
+                deltas = [v['delta'] for v in self.volume_history]
+                avg_delta = sum(deltas) / len(deltas)
+            
+            # Update tracking
+            self.previous_cumulative_volume = cumulative_volume
+            self.previous_volume_time = current_time
+            
+            logger.info(f"📊 VOLUME (DELTA MODE):")
+            logger.info(f"   Cumulative: {cumulative_volume:,.0f}")
+            if delta_volume is not None:
+                logger.info(f"   Delta (1-min): {delta_volume:,.0f}")
+            if avg_delta is not None:
+                logger.info(f"   Avg delta: {avg_delta:,.0f}")
+            
+            return cumulative_volume, delta_volume, avg_delta
             
         except Exception as e:
             logger.error(f"❌ Live volume error: {e}")
-            return None
+            return None, None, None
+    
+    def update_live_vwap(self, price, volume):
+        """
+        🆕 UPDATE VWAP using live data (when candles frozen)
+        """
+        if volume is None or volume <= 0:
+            return self.live_vwap
+        
+        try:
+            # Incremental VWAP calculation
+            self.vwap_cumulative_vol_price += (price * volume)
+            self.vwap_cumulative_volume += volume
+            
+            if self.vwap_cumulative_volume > 0:
+                self.live_vwap = self.vwap_cumulative_vol_price / self.vwap_cumulative_volume
+            
+            return self.live_vwap
+        except Exception as e:
+            logger.error(f"❌ Live VWAP error: {e}")
+            return self.live_vwap
+    
+    def calculate_synthetic_atr(self, periods=14):
+        """
+        🆕 CALCULATE ATR from live price history (when candles frozen)
+        """
+        if len(self.live_price_history) < periods:
+            return ATR_FALLBACK
+        
+        try:
+            recent_prices = [p['price'] for p in self.live_price_history[-periods:]]
+            
+            # Calculate True Range from price movements
+            ranges = []
+            for i in range(1, len(recent_prices)):
+                price_range = abs(recent_prices[i] - recent_prices[i-1])
+                ranges.append(price_range)
+            
+            if not ranges:
+                return ATR_FALLBACK
+            
+            atr = sum(ranges) / len(ranges)
+            
+            logger.info(f"📊 SYNTHETIC ATR: {atr:.1f} (from {len(ranges)} price moves)")
+            
+            return round(atr, 2)
+        
+        except Exception as e:
+            logger.error(f"❌ Synthetic ATR error: {e}")
+            return ATR_FALLBACK
+    
+    def is_candle_frozen(self):
+        """Check if candle API is frozen"""
+        return self.candle_frozen
     
     async def fetch_option_chain(self, reference_price):
-        """
-        Fetch WEEKLY option chain - 11 strikes
-        reference_price can be spot OR futures (caller decides)
-        """
+        """Fetch option chain"""
         try:
             if not self.client.index_key:
                 return None
@@ -677,26 +787,13 @@ class DataFetcher:
             atm = calculate_atm_strike(reference_price)
             min_strike, max_strike = get_strike_range_fetch(atm)
             
-            logger.info(f"📡 Fetching option chain: Expiry={expiry}, ATM={atm}, Range={min_strike}-{max_strike}")
-            
             data = await self.client.get_option_chain(self.client.index_key, expiry)
             
             if not data:
                 return None
             
-            # DEBUG: Log response structure
-            logger.info(f"🔍 DEBUG: Response type: {type(data)}")
-            if isinstance(data, dict):
-                logger.info(f"🔍 DEBUG: Top-level keys: {list(data.keys())[:5]}")
-            elif isinstance(data, list):
-                logger.info(f"🔍 DEBUG: List length: {len(data)}")
-                if len(data) > 0:
-                    logger.info(f"🔍 DEBUG: First item keys: {list(data[0].keys()) if isinstance(data[0], dict) else 'Not a dict'}")
-                    logger.info(f"🔍 DEBUG: First item sample: {str(data[0])[:200]}")
-            
             strike_data = {}
             
-            # Parse response (handle both list and dict formats)
             if isinstance(data, list):
                 for item in data:
                     strike = item.get('strike_price') or item.get('strike')
@@ -710,13 +807,6 @@ class DataFetcher:
                     ce_data = item.get('call_options', {}) or item.get('CE', {})
                     pe_data = item.get('put_options', {}) or item.get('PE', {})
                     
-                    # DEBUG: Log first strike structure
-                    if len(strike_data) == 0:
-                        logger.info(f"🔍 DEBUG: CE data keys: {list(ce_data.keys()) if ce_data else 'Empty'}")
-                        logger.info(f"🔍 DEBUG: PE data keys: {list(pe_data.keys()) if pe_data else 'Empty'}")
-                        logger.info(f"🔍 DEBUG: CE sample: {str(ce_data)[:200]}")
-                    
-                    # Extract from nested market_data object
                     ce_market = ce_data.get('market_data', {})
                     pe_market = pe_data.get('market_data', {})
                     
@@ -742,12 +832,6 @@ class DataFetcher:
                     ce_data = item.get('call_options', {}) or item.get('CE', {})
                     pe_data = item.get('put_options', {}) or item.get('PE', {})
                     
-                    # DEBUG: Log first strike structure
-                    if len(strike_data) == 0:
-                        logger.info(f"🔍 DEBUG: CE data keys: {list(ce_data.keys()) if ce_data else 'Empty'}")
-                        logger.info(f"🔍 DEBUG: PE data keys: {list(pe_data.keys()) if pe_data else 'Empty'}")
-                    
-                    # Extract from nested market_data object
                     ce_market = ce_data.get('market_data', {})
                     pe_market = pe_data.get('market_data', {})
                     
@@ -761,13 +845,10 @@ class DataFetcher:
                     }
             
             if not strike_data:
-                logger.error("❌ No strikes parsed!")
                 return None
             
             total_oi = sum(d['ce_oi'] + d['pe_oi'] for d in strike_data.values())
             if total_oi == 0:
-                logger.error("❌ ALL OI VALUES ARE ZERO!")
-                logger.error(f"🔍 DEBUG: Strike data sample: {list(strike_data.items())[:2]}")
                 return None
             
             logger.info(f"✅ Parsed {len(strike_data)} strikes (Total OI: {total_oi:,.0f})")
@@ -775,5 +856,5 @@ class DataFetcher:
             return atm, strike_data
         
         except Exception as e:
-            logger.error(f"❌ Option chain error: {e}", exc_info=True)
+            logger.error(f"❌ Option chain error: {e}")
             return None
