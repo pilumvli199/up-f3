@@ -1,6 +1,6 @@
 """
 Data Manager: Upstox API + Redis Memory
-FIXED: Monthly futures auto-detection, LIVE price fetching, 11 strikes fetch
+FIXED: LIVE volume fetching, timestamp debugging, proper candle handling
 """
 
 import asyncio
@@ -133,9 +133,7 @@ class UpstoxClient:
                 logger.error("❌ NIFTY spot not found")
                 return False
             
-            # Find MONTHLY futures (SMART DETECTION - based on days to expiry)
-            # Logic: Monthly futures have 20-35 days to expiry typically
-            #        Weekly futures have 0-7 days to expiry
+            # Find MONTHLY futures (SMART DETECTION)
             now = datetime.now(IST)
             all_futures = []
             
@@ -154,7 +152,6 @@ class UpstoxClient:
                 try:
                     expiry_dt = datetime.fromtimestamp(expiry_ms / 1000, tz=IST)
                     
-                    # Only consider futures that expire AFTER today
                     if expiry_dt > now:
                         days_to_expiry = (expiry_dt - now).days
                         all_futures.append({
@@ -174,20 +171,15 @@ class UpstoxClient:
             # Sort by expiry date
             all_futures.sort(key=lambda x: x['expiry'])
             
-            # SMART SELECTION LOGIC:
-            # 1. If nearest futures has > 10 days → It's MONTHLY (use it)
-            # 2. If nearest futures has < 10 days → It's WEEKLY (skip to next)
-            # 3. This handles holidays automatically!
-            
+            # Select MONTHLY contract (>10 days)
             monthly_futures = None
             
             for fut in all_futures:
                 if fut['days_to_expiry'] > 10:
-                    # This is a MONTHLY contract (far expiry)
                     monthly_futures = fut
                     break
             
-            # Fallback: If no contract > 10 days, use nearest (emergency case)
+            # Fallback: nearest
             if not monthly_futures:
                 monthly_futures = all_futures[0]
                 logger.warning(f"⚠️ Using nearest futures (no contract > 10 days found)")
@@ -198,7 +190,6 @@ class UpstoxClient:
             
             logger.info(f"✅ Futures (MONTHLY): {monthly_futures['symbol']}")
             logger.info(f"   Expiry: {monthly_futures['expiry'].strftime('%Y-%m-%d %A')} ({monthly_futures['days_to_expiry']} days)")
-            logger.info(f"   Type: {'MONTHLY' if monthly_futures['days_to_expiry'] > 10 else 'WEEKLY (fallback)'}")
             
             return True
         
@@ -528,10 +519,12 @@ class RedisBrain:
 
 # ==================== Data Fetcher ====================
 class DataFetcher:
-    """High-level data fetching"""
+    """High-level data fetching with LIVE volume support"""
     
     def __init__(self, client):
         self.client = client
+        self.last_candle_timestamp = None
+        self.candle_repeat_count = 0
     
     async def fetch_spot(self):
         """Fetch spot price (for ATM calculation)"""
@@ -557,7 +550,9 @@ class DataFetcher:
             return None
     
     async def fetch_futures_candles(self):
-        """Fetch MONTHLY futures candles (for VWAP/ATR/technical analysis)"""
+        """
+        🔧 FIXED: Fetch MONTHLY futures candles + detect timestamp freezing
+        """
         try:
             if not self.client.futures_key:
                 return None
@@ -571,12 +566,8 @@ class DataFetcher:
             if not candles:
                 return None
             
-            # DEBUG: Check candle format
-            logger.debug(f"📊 CANDLE DEBUG: First candle type={type(candles[0])}, data={candles[0] if candles else 'empty'}")
-            
             # Handle both list and dict formats
             if isinstance(candles[0], dict):
-                # Dict format (newer API) - column names as-is
                 df = pd.DataFrame(candles)
                 required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
                 if not all(col in df.columns for col in required_cols):
@@ -589,18 +580,35 @@ class DataFetcher:
                 df['high'] = pd.to_numeric(df['high'], errors='coerce')
                 df['low'] = pd.to_numeric(df['low'], errors='coerce')
                 df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                
-                logger.info(f"📊 CANDLE PARSE: First 3 volumes: {df['volume'].head(3).tolist()}, Last 3: {df['volume'].tail(3).tolist()}")
             else:
-                # List format (legacy API)
                 df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
             
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             
+            # 🆕 TIMESTAMP FREEZE DETECTION
+            latest_timestamp = df['timestamp'].iloc[-1]
+            
+            if self.last_candle_timestamp == latest_timestamp:
+                self.candle_repeat_count += 1
+                logger.warning(f"⚠️ CANDLE FROZEN! Same timestamp repeated {self.candle_repeat_count} times: {latest_timestamp}")
+            else:
+                if self.candle_repeat_count > 0:
+                    logger.info(f"✅ Candle updated after {self.candle_repeat_count} repeats")
+                self.candle_repeat_count = 0
+                self.last_candle_timestamp = latest_timestamp
+            
+            # 🆕 DETAILED CANDLE DEBUG
+            logger.info(f"📊 CANDLE DEBUG:")
+            logger.info(f"   Total bars: {len(df)}")
+            logger.info(f"   Latest candle time: {latest_timestamp}")
+            logger.info(f"   Latest close: ₹{df['close'].iloc[-1]:.2f}")
+            logger.info(f"   Latest volume: {df['volume'].iloc[-1]:,.0f}")
+            logger.info(f"   Last 3 timestamps: {df['timestamp'].tail(3).dt.strftime('%H:%M:%S').tolist()}")
+            
             return df
         
         except Exception as e:
-            logger.error(f"❌ Futures candles error: {e}")
+            logger.error(f"❌ Futures candles error: {e}", exc_info=True)
             return None
     
     async def fetch_futures_ltp(self):
@@ -627,14 +635,46 @@ class DataFetcher:
             logger.error(f"❌ Futures LTP error: {e}")
             return None
     
-    async def fetch_option_chain(self, spot_price):
-        """Fetch WEEKLY option chain - 11 strikes (ATM ± 5)"""
+    async def fetch_futures_live_volume(self):
+        """
+        🆕 FETCH LIVE VOLUME from quote API (not candles!)
+        This gets TODAY'S cumulative volume, NOT per-candle
+        """
+        try:
+            if not self.client.futures_key:
+                return None
+            
+            data = await self.client.get_quote(self.client.futures_key)
+            
+            if not data:
+                return None
+            
+            # Get volume from quote
+            volume = data.get('volume', 0)
+            
+            if volume == 0:
+                logger.warning("⚠️ Live volume = 0 from quote API")
+                return None
+            
+            logger.info(f"📊 LIVE VOLUME from quote: {volume:,.0f}")
+            
+            return float(volume)
+            
+        except Exception as e:
+            logger.error(f"❌ Live volume error: {e}")
+            return None
+    
+    async def fetch_option_chain(self, reference_price):
+        """
+        Fetch WEEKLY option chain - 11 strikes
+        reference_price can be spot OR futures (caller decides)
+        """
         try:
             if not self.client.index_key:
                 return None
             
             expiry = get_next_weekly_expiry()
-            atm = calculate_atm_strike(spot_price)
+            atm = calculate_atm_strike(reference_price)
             min_strike, max_strike = get_strike_range_fetch(atm)
             
             logger.info(f"📡 Fetching option chain: Expiry={expiry}, ATM={atm}, Range={min_strike}-{max_strike}")
