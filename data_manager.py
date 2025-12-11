@@ -571,7 +571,21 @@ class DataFetcher:
             if not candles:
                 return None
             
-            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
+            # DEBUG: Check candle format
+            logger.debug(f"📊 CANDLE DEBUG: First candle type={type(candles[0])}, data={candles[0] if candles else 'empty'}")
+            
+            # Handle both list and dict formats
+            if isinstance(candles[0], dict):
+                # Dict format (newer API)
+                df = pd.DataFrame(candles)
+                required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                if not all(col in df.columns for col in required_cols):
+                    logger.error(f"❌ Missing columns. Available: {df.columns.tolist()}")
+                    return None
+            else:
+                # List format (legacy API)
+                df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
+            
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             
             return df
