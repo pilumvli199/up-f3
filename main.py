@@ -271,18 +271,36 @@ class NiftyTradingBot:
             return
         logger.info(f"  ✅ Futures LIVE: ₹{futures_ltp:.2f} (REAL-TIME)")
         
+        # 🆕 FETCH LIVE VOLUME (separate from candles!)
+        futures_live_volume = await self.data_fetcher.fetch_futures_live_volume()
+        if futures_live_volume:
+            logger.info(f"  ✅ Futures LIVE Volume: {futures_live_volume:,.0f} (REAL-TIME)")
+        else:
+            logger.warning(f"  ⚠️ Live volume fetch failed, will use candle data")
+        
         # Compare candle close vs live price
         candle_close = futures_df['close'].iloc[-1]
         price_diff = futures_ltp - candle_close
         logger.info(f"  📊 Price Check: Candle={candle_close:.2f}, Live={futures_ltp:.2f}, Diff={price_diff:+.2f}")
         
-        # Fetch WEEKLY option chain (11 strikes)
-        option_result = await self.data_fetcher.fetch_option_chain(spot)
+        # 🔧 FIXED: Calculate ATM from FUTURES price (not spot!)
+        # Spot is for reference only, FUTURES is actual trading price
+        atm_from_futures = calculate_atm_strike(futures_ltp)
+        logger.info(f"  📊 ATM Calculation: Spot={spot:.2f} → {calculate_atm_strike(spot)}, Futures={futures_ltp:.2f} → {atm_from_futures}")
+        
+        # Fetch WEEKLY option chain (11 strikes) using FUTURES-based ATM
+        option_result = await self.data_fetcher.fetch_option_chain(futures_ltp)
         if not option_result:
             logger.error("❌ STOP: Option chain returned None")
             return
         
         atm, strike_data = option_result
+        
+        # Verify ATM is correct (should match futures-based calculation)
+        if atm != atm_from_futures:
+            logger.warning(f"⚠️ ATM MISMATCH: Expected {atm_from_futures}, Got {atm}")
+            logger.warning(f"   Using {atm_from_futures} (from FUTURES price)")
+            atm = atm_from_futures
         if not validate_strike_data(strike_data):
             logger.error(f"❌ STOP: Strike validation failed")
             return
@@ -292,9 +310,13 @@ class NiftyTradingBot:
         logger.info(f"  ✅ Strikes: {len(strike_data)} total (ATM {atm})")
         logger.info(f"  🔍 Deep Analysis: {len(deep_strikes)} strikes {deep_strikes[0]}-{deep_strikes[-1]}")
         
-        # Use LIVE price for all decisions
+        # Use LIVE futures price for all decisions
         futures_price = futures_ltp
-        logger.info(f"\n💹 Prices: Spot={spot:.2f}, Futures(LIVE)={futures_price:.2f}, ATM={atm}")
+        logger.info(f"\n💹 PRICES & ATM:")
+        logger.info(f"  Spot: ₹{spot:.2f} (reference only)")
+        logger.info(f"  Futures LIVE: ₹{futures_price:.2f} (TRADING PRICE)")
+        logger.info(f"  ATM Strike: {atm} (calculated from FUTURES, not spot)")
+        logger.info(f"  Spread: Futures-Spot = {futures_price - spot:+.2f} pts")
         
         # ========== STEP 2: SAVE OI SNAPSHOTS (ALL 11 STRIKES) ==========
         
@@ -355,11 +377,14 @@ class NiftyTradingBot:
         candle = self.technical_analyzer.analyze_candle(futures_df)
         momentum = self.technical_analyzer.detect_momentum(futures_df)
         
-        # 🆕 VOLUME ANALYSIS with detailed logging
-        vol_trend = self.volume_analyzer.analyze_volume_trend(futures_df)
+        # 🆕 VOLUME ANALYSIS with LIVE data (if available)
+        vol_trend = self.volume_analyzer.analyze_volume_trend(
+            futures_df, 
+            live_volume=futures_live_volume  # Use LIVE volume instead of candle!
+        )
         logger.info(f"📊 VOLUME ANALYSIS RESULT:")
         logger.info(f"   Trend: {vol_trend['trend']}")
-        logger.info(f"   Current: {vol_trend['current_volume']:,.0f}")
+        logger.info(f"   Current: {vol_trend['current_volume']:,.0f} ({vol_trend.get('source', 'CANDLE')})")
         logger.info(f"   Average: {vol_trend['avg_volume']:,.0f}")
         logger.info(f"   Ratio: {vol_trend['ratio']:.2f}x")
         
