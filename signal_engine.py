@@ -91,6 +91,13 @@ class SignalGenerator:
                       gamma_zone, momentum, multi_tf, oi_strength='weak'):
         """Check CE_BUY setup with VWAP validation"""
         
+        # STEP 0: EXHAUSTION CHECK (late entry after big move)
+        # Check if price already moved 2.5x ATR from recent high
+        price_from_vwap = abs(futures_price - vwap)
+        if price_from_vwap > (atr * 2.5):
+            logger.debug(f"  ❌ CE_BUY blocked: EXHAUSTION (Price {price_from_vwap:.0f} pts from VWAP, limit {atr*2.5:.0f})")
+            return None
+        
         # STEP 1: VWAP Validation (BLOCKING CHECK)
         vwap_valid, vwap_reason, vwap_score = TechnicalAnalyzer.validate_signal_with_vwap(
             "CE_BUY", futures_price, vwap, atr
@@ -104,19 +111,30 @@ class SignalGenerator:
         
         # STEP 2: Primary checks (STRICTER - both TF required)
         # CE_BUY = Buy Calls when PUTs are unwinding (bullish move expected!)
+        
+        # CRITICAL: Check for CONFLICTING OI (both building = confused market)
+        if pe_total_5m > 0 and ce_total_5m > 0:
+            if abs(pe_total_5m) > 10 and abs(ce_total_5m) > 10:
+                logger.debug(f"  ❌ CE_BUY blocked: CONFLICTING OI (Both PE +{pe_total_5m:.1f}% and CE +{ce_total_5m:.1f}% building)")
+                return None
+        
         primary_ce = pe_total_15m < -MIN_OI_15M_FOR_ENTRY and pe_total_5m < -MIN_OI_5M_FOR_ENTRY and has_15m_total and has_5m_total
         
-        # ATM check - ONLY if we have 15m data (not blocking on ATM shifts)
+        # ATM check - STRICT (BLOCK if no data!)
         primary_atm = False
         atm_skipped = False
         
         # For CE_BUY, check PE ATM unwinding (puts being sold = bullish)
-        if has_15m_atm and atm_pe_15m < -ATM_OI_THRESHOLD:
-            primary_atm = True
-        elif not has_15m_atm:
-            logger.debug(f"  ⚠️ ATM check skipped (no 15m data after ATM shift)")
-            atm_skipped = True  # Track that we skipped it
-            # Don't count as passed OR failed - neutral
+        if has_15m_atm:
+            if atm_pe_15m < -ATM_OI_THRESHOLD:
+                primary_atm = True
+            else:
+                # ATM data exists but NOT unwinding
+                primary_atm = False
+        else:
+            # NO ATM data = BLOCK signal (too risky!)
+            logger.debug(f"  ❌ CE_BUY blocked: No ATM 15m data (ATM shift detected)")
+            return None
         
         primary_vol = volume_spike
         
@@ -154,8 +172,8 @@ class SignalGenerator:
                 confidence += 25
             else:
                 confidence += 20
-        # ATM: Only add points if actually checked AND passed
-        if primary_atm and not atm_skipped:
+        # ATM: Always add points (no bypass allowed now)
+        if primary_atm:
             confidence += 20
         if primary_vol: confidence += 15
         
@@ -233,6 +251,13 @@ class SignalGenerator:
                       gamma_zone, momentum, multi_tf, oi_strength='weak'):
         """Check PE_BUY setup with VWAP validation"""
         
+        # STEP 0: EXHAUSTION CHECK (late entry after big move)
+        # Check if price already moved 2.5x ATR from recent high
+        price_from_vwap = abs(futures_price - vwap)
+        if price_from_vwap > (atr * 2.5):
+            logger.debug(f"  ❌ PE_BUY blocked: EXHAUSTION (Price {price_from_vwap:.0f} pts from VWAP, limit {atr*2.5:.0f})")
+            return None
+        
         # STEP 1: VWAP Validation (BLOCKING CHECK)
         vwap_valid, vwap_reason, vwap_score = TechnicalAnalyzer.validate_signal_with_vwap(
             "PE_BUY", futures_price, vwap, atr
@@ -246,19 +271,30 @@ class SignalGenerator:
         
         # STEP 2: Primary checks (STRICTER - both TF required)
         # PE_BUY = Buy Puts when CALLs are unwinding (bearish move expected!)
+        
+        # CRITICAL: Check for CONFLICTING OI (both building = confused market)
+        if ce_total_5m > 0 and pe_total_5m > 0:
+            if abs(ce_total_5m) > 10 and abs(pe_total_5m) > 10:
+                logger.debug(f"  ❌ PE_BUY blocked: CONFLICTING OI (Both CE +{ce_total_5m:.1f}% and PE +{pe_total_5m:.1f}% building)")
+                return None
+        
         primary_pe = ce_total_15m < -MIN_OI_15M_FOR_ENTRY and ce_total_5m < -MIN_OI_5M_FOR_ENTRY and has_15m_total and has_5m_total
         
-        # ATM check - ONLY if we have 15m data (not blocking on ATM shifts)
+        # ATM check - STRICT (BLOCK if no data!)
         primary_atm = False
         atm_skipped = False
         
         # For PE_BUY, check CE ATM unwinding (calls being sold = bearish)
-        if has_15m_atm and atm_ce_15m < -ATM_OI_THRESHOLD:
-            primary_atm = True
-        elif not has_15m_atm:
-            logger.debug(f"  ⚠️ ATM check skipped (no 15m data after ATM shift)")
-            atm_skipped = True  # Track that we skipped it
-            # Don't count as passed OR failed - neutral
+        if has_15m_atm:
+            if atm_ce_15m < -ATM_OI_THRESHOLD:
+                primary_atm = True
+            else:
+                # ATM data exists but NOT unwinding
+                primary_atm = False
+        else:
+            # NO ATM data = BLOCK signal (too risky!)
+            logger.debug(f"  ❌ PE_BUY blocked: No ATM 15m data (ATM shift detected)")
+            return None
         
         primary_vol = volume_spike
         
@@ -296,8 +332,8 @@ class SignalGenerator:
                 confidence += 25
             else:
                 confidence += 20
-        # ATM: Only add points if actually checked AND passed
-        if primary_atm and not atm_skipped:
+        # ATM: Always add points (no bypass allowed now)
+        if primary_atm:
             confidence += 20
         if primary_vol: confidence += 15
         
