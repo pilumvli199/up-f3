@@ -401,7 +401,7 @@ class TechnicalAnalyzer:
     
     @staticmethod
     def detect_momentum(df, periods=3):
-        """Detect price momentum"""
+        """Detect price momentum with minimum candle size requirement"""
         if df is None or len(df) < periods:
             return {
                 'direction': 'unknown',
@@ -411,17 +411,30 @@ class TechnicalAnalyzer:
             }
         
         recent = df.tail(periods)
-        green = sum(recent['close'] > recent['open'])
-        red = sum(recent['close'] < recent['open'])
         
-        direction = 'bullish' if green >= 2 else 'bearish' if red >= 2 else 'sideways'
-        strength = green if green >= 2 else red if red >= 2 else 0
+        # Check both COLOR and SIZE (avoid tiny sideways candles)
+        min_body_size = MIN_CANDLE_SIZE  # From config (default 5 pts)
+        
+        green_valid = 0
+        red_valid = 0
+        
+        for idx, row in recent.iterrows():
+            body_size = abs(row['close'] - row['open'])
+            
+            if body_size >= min_body_size:  # Only count significant candles
+                if row['close'] > row['open']:
+                    green_valid += 1
+                elif row['close'] < row['open']:
+                    red_valid += 1
+        
+        direction = 'bullish' if green_valid >= 2 else 'bearish' if red_valid >= 2 else 'sideways'
+        strength = green_valid if green_valid >= 2 else red_valid if red_valid >= 2 else 0
         
         return {
             'direction': direction,
             'strength': strength,
-            'consecutive_green': green,
-            'consecutive_red': red
+            'consecutive_green': green_valid,
+            'consecutive_red': red_valid
         }
     
     @staticmethod
