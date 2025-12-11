@@ -590,7 +590,7 @@ class DataFetcher:
                 df['low'] = pd.to_numeric(df['low'], errors='coerce')
                 df['close'] = pd.to_numeric(df['close'], errors='coerce')
                 
-                logger.debug(f"📊 VOL DEBUG PARSE: First 3 volumes: {df['volume'].head(3).tolist()}")
+                logger.info(f"📊 CANDLE PARSE: First 3 volumes: {df['volume'].head(3).tolist()}, Last 3: {df['volume'].tail(3).tolist()}")
             else:
                 # List format (legacy API)
                 df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
