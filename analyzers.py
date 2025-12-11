@@ -212,8 +212,10 @@ class VolumeAnalyzer:
     def detect_volume_spike(current, avg):
         """Detect volume spike"""
         if avg == 0:
+            logger.info(f"⚠️ VOL SPIKE: avg=0, returning False")
             return False, 0.0
         ratio = current / avg
+        logger.info(f"📊 VOL SPIKE CHECK: current={current:.0f}, avg={avg:.0f}, ratio={ratio:.2f}")
         return ratio >= VOL_SPIKE_MULTIPLIER, round(ratio, 2)
     
     @staticmethod
@@ -248,8 +250,8 @@ class VolumeAnalyzer:
         current = recent.iloc[-1]
         ratio = current / avg if avg > 0 else 1.0
         
-        # DEBUG: Log actual values
-        logger.debug(f"📊 VOL DEBUG: current={current:.0f}, avg={avg:.0f}, ratio={ratio:.2f}")
+        # CRITICAL DEBUG: Use INFO level so it shows!
+        logger.info(f"📊 VOL CALC: current={current:.0f}, avg={avg:.0f}, ratio={ratio:.2f}, df_len={len(df)}")
         
         trend = 'increasing' if ratio > 1.3 else 'decreasing' if ratio < 0.7 else 'stable'
         
