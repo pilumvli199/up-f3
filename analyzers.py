@@ -1,6 +1,6 @@
 """
 Market Analyzers: OI, Volume, Technical, Market Structure
-FIXED: 5 strikes deep analysis, AND logic for unwinding, VWAP validation
+FIXED: Volume calculation, conflicting OI detection, ATM validation
 """
 
 import pandas as pd
@@ -96,6 +96,37 @@ class OIAnalyzer:
         }
     
     @staticmethod
+    def detect_conflicting_oi(ce_5m, ce_15m, pe_5m, pe_15m):
+        """
+        🆕 DETECT CONFLICTING OI (both building = choppy market)
+        Returns: (is_conflicting, reason)
+        """
+        # Strong building threshold
+        BUILDING_THRESHOLD = 3.0
+        
+        # Check if BOTH CE and PE building on 5m (immediate conflict)
+        ce_building_5m = ce_5m > BUILDING_THRESHOLD
+        pe_building_5m = pe_5m > BUILDING_THRESHOLD
+        
+        if ce_building_5m and pe_building_5m:
+            return True, f"BOTH CE (+{ce_5m:.1f}%) & PE (+{pe_5m:.1f}%) building on 5m = CHOPPY"
+        
+        # Check opposing directions on different TFs (confused market)
+        ce_unwinding_15m = ce_15m < -MIN_OI_15M_FOR_ENTRY
+        pe_building_5m_strong = pe_5m > BUILDING_THRESHOLD
+        
+        if ce_unwinding_15m and pe_building_5m_strong:
+            return True, f"CE unwinding 15m ({ce_15m:.1f}%) BUT PE building 5m (+{pe_5m:.1f}%) = CONFUSED"
+        
+        pe_unwinding_15m = pe_15m < -MIN_OI_15M_FOR_ENTRY
+        ce_building_5m_strong = ce_5m > BUILDING_THRESHOLD
+        
+        if pe_unwinding_15m and ce_building_5m_strong:
+            return True, f"PE unwinding 15m ({pe_15m:.1f}%) BUT CE building 5m (+{ce_5m:.1f}%) = CONFUSED"
+        
+        return False, "OI aligned"
+    
+    @staticmethod
     def get_atm_data(strike_data, atm_strike):
         """Get ATM strike data (current values only)"""
         return strike_data.get(atm_strike, {
@@ -165,6 +196,34 @@ class OIAnalyzer:
         }
     
     @staticmethod
+    def validate_atm_data(atm_data):
+        """
+        🆕 VALIDATE ATM data is actually updating (not stuck at 0)
+        Returns: (is_valid, reason)
+        """
+        ce_ltp = atm_data.get('ce_ltp', 0)
+        pe_ltp = atm_data.get('pe_ltp', 0)
+        ce_oi = atm_data.get('ce_oi', 0)
+        pe_oi = atm_data.get('pe_oi', 0)
+        
+        # Check if ALL values are zero (API not updating)
+        if ce_ltp == 0 and pe_ltp == 0 and ce_oi == 0 and pe_oi == 0:
+            return False, "ATM data ALL ZERO (API not updating or wrong strike)"
+        
+        # Check if premiums are realistic
+        if ce_ltp > 0 and ce_ltp < 5:
+            return False, f"CE premium {ce_ltp:.2f} too low (deep OTM?)"
+        
+        if pe_ltp > 0 and pe_ltp < 5:
+            return False, f"PE premium {pe_ltp:.2f} too low (deep OTM?)"
+        
+        # Check if OI exists
+        if ce_oi == 0 and pe_oi == 0:
+            return False, "ATM has NO open interest (illiquid strike)"
+        
+        return True, "ATM data valid"
+    
+    @staticmethod
     def check_oi_reversal(signal_type, oi_changes_history, threshold=EXIT_OI_REVERSAL_THRESHOLD):
         """
         Check OI reversal with SUSTAINED building (not single candle spike)
@@ -212,11 +271,22 @@ class VolumeAnalyzer:
     def detect_volume_spike(current, avg):
         """Detect volume spike"""
         if avg == 0:
-            logger.info(f"⚠️ VOL SPIKE: avg=0, returning False")
+            logger.debug(f"⚠️ VOL SPIKE: avg=0, returning False")
             return False, 0.0
+        
         ratio = current / avg
-        logger.info(f"📊 VOL SPIKE CHECK: current={current:.0f}, avg={avg:.0f}, ratio={ratio:.2f}")
-        return ratio >= VOL_SPIKE_MULTIPLIER, round(ratio, 2)
+        
+        # 🆕 DEBUG: Show calculation clearly
+        logger.info(f"📊 VOL SPIKE: current={current:,.0f} / avg={avg:,.0f} = {ratio:.2f}x")
+        
+        is_spike = ratio >= VOL_SPIKE_MULTIPLIER
+        
+        if is_spike:
+            logger.info(f"🔥 VOLUME SPIKE CONFIRMED: {ratio:.2f}x ≥ {VOL_SPIKE_MULTIPLIER}x threshold")
+        else:
+            logger.debug(f"   No spike: {ratio:.2f}x < {VOL_SPIKE_MULTIPLIER}x")
+        
+        return is_spike, round(ratio, 2)
     
     @staticmethod
     def calculate_order_flow(strike_data):
@@ -235,9 +305,12 @@ class VolumeAnalyzer:
     
     @staticmethod
     def analyze_volume_trend(df, periods=5):
-        """Analyze volume trend from futures candles"""
+        """
+        🔧 FIXED: Analyze volume trend from futures candles
+        Now properly handles volume data and validates calculations
+        """
         if df is None or len(df) < periods + 1:
-            logger.warning(f"⚠️ VOL DEBUG: Insufficient data - df={'None' if df is None else len(df)} rows")
+            logger.warning(f"⚠️ VOL TREND: Insufficient data - df={'None' if df is None else len(df)} rows")
             return {
                 'trend': 'unknown',
                 'avg_volume': 0,
@@ -245,22 +318,59 @@ class VolumeAnalyzer:
                 'ratio': 1.0
             }
         
-        recent = df['volume'].tail(periods + 1)
-        avg = recent.iloc[:-1].mean()
-        current = recent.iloc[-1]
-        ratio = current / avg if avg > 0 else 1.0
-        
-        # CRITICAL DEBUG: Use INFO level so it shows!
-        logger.info(f"📊 VOL CALC: current={current:.0f}, avg={avg:.0f}, ratio={ratio:.2f}, df_len={len(df)}")
-        
-        trend = 'increasing' if ratio > 1.3 else 'decreasing' if ratio < 0.7 else 'stable'
-        
-        return {
-            'trend': trend,
-            'avg_volume': round(avg, 2),
-            'current_volume': round(current, 2),
-            'ratio': round(ratio, 2)
-        }
+        try:
+            # Get recent volumes (exclude current candle for average)
+            recent = df['volume'].tail(periods + 1)
+            
+            # 🆕 VALIDATE: Check if volume is actually numeric
+            if not pd.api.types.is_numeric_dtype(recent):
+                logger.error(f"❌ VOL TREND: Volume not numeric! Type: {recent.dtype}")
+                return {
+                    'trend': 'unknown',
+                    'avg_volume': 0,
+                    'current_volume': 0,
+                    'ratio': 1.0
+                }
+            
+            avg = recent.iloc[:-1].mean()
+            current = recent.iloc[-1]
+            
+            # 🆕 VALIDATE: Check for NaN or invalid values
+            if pd.isna(avg) or pd.isna(current) or avg <= 0:
+                logger.error(f"❌ VOL TREND: Invalid values - avg={avg}, current={current}")
+                return {
+                    'trend': 'unknown',
+                    'avg_volume': 0,
+                    'current_volume': 0,
+                    'ratio': 1.0
+                }
+            
+            ratio = current / avg
+            
+            # 🆕 DETAILED DEBUG at INFO level
+            logger.info(f"📊 VOL TREND CALC:")
+            logger.info(f"   Last {periods} candles avg: {avg:,.0f}")
+            logger.info(f"   Current candle: {current:,.0f}")
+            logger.info(f"   Ratio: {ratio:.2f}x")
+            logger.info(f"   DataFrame shape: {df.shape}, Last 3 volumes: {df['volume'].tail(3).tolist()}")
+            
+            trend = 'increasing' if ratio > 1.3 else 'decreasing' if ratio < 0.7 else 'stable'
+            
+            return {
+                'trend': trend,
+                'avg_volume': round(float(avg), 2),
+                'current_volume': round(float(current), 2),
+                'ratio': round(float(ratio), 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ VOL TREND ERROR: {e}", exc_info=True)
+            return {
+                'trend': 'unknown',
+                'avg_volume': 0,
+                'current_volume': 0,
+                'ratio': 1.0
+            }
 
 
 # ==================== Technical Analyzer ====================
