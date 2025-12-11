@@ -14,7 +14,7 @@ from signal_engine import SignalGenerator, SignalValidator
 from position_tracker import PositionTracker
 from alerts import TelegramBot, MessageFormatter
 
-BOT_VERSION = "4.1.0-FIXED"
+BOT_VERSION = "4.2.0-V2-COMPLETE"
 
 logger = setup_logger("main")
 
@@ -41,6 +41,7 @@ class NiftyTradingBot:
         
         self.previous_strike_data = None
         self.exit_triggered_this_cycle = False
+        self.previous_atm = None  # 🆕 Track ATM for validation
     
     async def initialize(self):
         """Initialize bot with comprehensive startup notification"""
@@ -73,13 +74,16 @@ class NiftyTradingBot:
 🚀 <b>NIFTY BOT v{BOT_VERSION} STARTED</b>
 
 ━━━━━━━━━━━━━━━━━━━━
-🔧 <b>FIXES IN THIS VERSION</b>
+🔥 <b>V2 COMPLETE FIXES</b>
 ━━━━━━━━━━━━━━━━━━━━
 
-✅ Conflicting OI Detection
-✅ ATM Data Validation
-✅ Volume Calculation Debug
-✅ Better Error Logging
+✅ Volume Delta Tracking (CORRECT calculation!)
+✅ Candle Freeze Detection & Fallback
+✅ Live VWAP Updates
+✅ Synthetic ATR (when candles frozen)
+✅ ATM Strike Validation
+✅ Adaptive Volume Thresholds
+✅ Enhanced Fallback Mode
 
 ━━━━━━━━━━━━━━━━━━━━
 📅 <b>CONTRACT DETAILS</b>
@@ -95,8 +99,19 @@ class NiftyTradingBot:
 • Usage: Trading instrument + OI analysis
 
 ━━━━━━━━━━━━━━━━━━━━
-📊 <b>DATA STRATEGY</b>
+📊 <b>V2 DATA STRATEGY</b>
 ━━━━━━━━━━━━━━━━━━━━
+
+<b>Volume Tracking (NEW!):</b>
+✅ DELTA MODE - Compare 1-min deltas (CORRECT!)
+✅ Cumulative tracking for delta calculation
+✅ Adaptive thresholds based on source
+
+<b>Fallback System (NEW!):</b>
+✅ Candle freeze detection (>5 repeats)
+✅ Live VWAP calculation (incremental)
+✅ Synthetic ATR (from price movements)
+✅ Graceful degradation - never crashes!
 
 <b>MONTHLY Futures Data:</b>
 ✅ Candles for VWAP/ATR/EMA
@@ -271,12 +286,27 @@ class NiftyTradingBot:
             return
         logger.info(f"  ✅ Futures LIVE: ₹{futures_ltp:.2f} (REAL-TIME)")
         
-        # 🆕 FETCH LIVE VOLUME (separate from candles!)
-        futures_live_volume = await self.data_fetcher.fetch_futures_live_volume()
-        if futures_live_volume:
-            logger.info(f"  ✅ Futures LIVE Volume: {futures_live_volume:,.0f} (REAL-TIME)")
+        # 🆕 V2: FETCH LIVE VOLUME WITH DELTA (1-min change calculation)
+        cumulative_vol, delta_vol, avg_delta = await self.data_fetcher.fetch_futures_live_volume()
+        
+        if delta_vol is not None:
+            logger.info(f"  ✅ Volume Delta (1-min): {delta_vol:,.0f} (DELTA MODE)")
+        elif cumulative_vol:
+            logger.info(f"  ✅ Futures LIVE Volume: {cumulative_vol:,.0f} (cumulative)")
         else:
             logger.warning(f"  ⚠️ Live volume fetch failed, will use candle data")
+        
+        # 🆕 V2: UPDATE LIVE VWAP (for fallback when candles frozen)
+        live_vwap = None
+        if delta_vol and delta_vol > 0:
+            live_vwap = self.data_fetcher.update_live_vwap(futures_ltp, delta_vol)
+            if live_vwap:
+                logger.info(f"  ✅ Live VWAP updated: ₹{live_vwap:.2f}")
+        
+        # 🆕 V2: CHECK IF CANDLES FROZEN
+        candle_frozen = self.data_fetcher.is_candle_frozen()
+        if candle_frozen:
+            logger.warning(f"  🚨 OPERATING IN FALLBACK MODE - Candles frozen!")
         
         # Compare candle close vs live price
         candle_close = futures_df['close'].iloc[-1]
@@ -309,6 +339,18 @@ class NiftyTradingBot:
         deep_strikes = get_deep_analysis_strikes(atm)
         logger.info(f"  ✅ Strikes: {len(strike_data)} total (ATM {atm})")
         logger.info(f"  🔍 Deep Analysis: {len(deep_strikes)} strikes {deep_strikes[0]}-{deep_strikes[-1]}")
+        
+        # 🆕 V2: VALIDATE ATM STRIKE (check against previous + futures price)
+        if self.previous_atm is not None:
+            atm_valid, atm_reason = self.oi_analyzer.validate_atm_strike(
+                atm, self.previous_atm, futures_ltp
+            )
+            if not atm_valid:
+                logger.error(f"❌ ATM VALIDATION FAILED: {atm_reason}")
+                logger.error(f"   Skipping this cycle - ATM seems wrong!")
+                return
+        
+        self.previous_atm = atm
         
         # Use LIVE futures price for all decisions
         futures_price = futures_ltp
@@ -371,25 +413,47 @@ class NiftyTradingBot:
         logger.info("🔍 Running technical analysis...")
         
         pcr = self.oi_analyzer.calculate_pcr(total_pe, total_ce)
-        vwap = self.technical_analyzer.calculate_vwap(futures_df)
-        atr = self.technical_analyzer.calculate_atr(futures_df)
+        
+        # 🆕 V2: VWAP with fallback support
+        vwap = self.technical_analyzer.calculate_vwap(
+            futures_df, 
+            live_vwap_fallback=live_vwap  # Use live VWAP if candles frozen
+        )
+        
+        # 🆕 V2: ATR with synthetic fallback
+        if candle_frozen:
+            synthetic_atr = self.data_fetcher.calculate_synthetic_atr()
+            logger.info(f"  📊 Using SYNTHETIC ATR: {synthetic_atr:.1f} (candles frozen)")
+            atr = self.technical_analyzer.calculate_atr(
+                futures_df, 
+                synthetic_atr_fallback=synthetic_atr
+            )
+        else:
+            atr = self.technical_analyzer.calculate_atr(futures_df)
+        
         vwap_dist = self.technical_analyzer.calculate_vwap_distance(futures_price, vwap) if vwap else 0
         candle = self.technical_analyzer.analyze_candle(futures_df)
         momentum = self.technical_analyzer.detect_momentum(futures_df)
         
-        # 🆕 VOLUME ANALYSIS with LIVE data (if available)
+        # 🆕 V2: VOLUME ANALYSIS with DELTA
         vol_trend = self.volume_analyzer.analyze_volume_trend(
-            futures_df, 
-            live_volume=futures_live_volume  # Use LIVE volume instead of candle!
+            futures_df,
+            live_volume_delta=delta_vol,  # Use DELTA (1-min change)!
+            candle_frozen=candle_frozen
         )
+        
         logger.info(f"📊 VOLUME ANALYSIS RESULT:")
+        logger.info(f"   Source: {vol_trend.get('source', 'UNKNOWN')}")
         logger.info(f"   Trend: {vol_trend['trend']}")
-        logger.info(f"   Current: {vol_trend['current_volume']:,.0f} ({vol_trend.get('source', 'CANDLE')})")
+        logger.info(f"   Current: {vol_trend['current_volume']:,.0f}")
         logger.info(f"   Average: {vol_trend['avg_volume']:,.0f}")
         logger.info(f"   Ratio: {vol_trend['ratio']:.2f}x")
         
+        # 🆕 V2: Volume spike with adaptive threshold
         vol_spike, vol_ratio = self.volume_analyzer.detect_volume_spike(
-            vol_trend['current_volume'], vol_trend['avg_volume']
+            vol_trend['current_volume'], 
+            vol_trend['avg_volume'],
+            adaptive_threshold=vol_trend.get('adaptive_threshold')
         )
         
         order_flow = self.volume_analyzer.calculate_order_flow(strike_data)
