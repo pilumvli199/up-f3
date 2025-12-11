@@ -576,12 +576,21 @@ class DataFetcher:
             
             # Handle both list and dict formats
             if isinstance(candles[0], dict):
-                # Dict format (newer API)
+                # Dict format (newer API) - column names as-is
                 df = pd.DataFrame(candles)
                 required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
                 if not all(col in df.columns for col in required_cols):
                     logger.error(f"❌ Missing columns. Available: {df.columns.tolist()}")
                     return None
+                
+                # Convert types explicitly
+                df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
+                df['open'] = pd.to_numeric(df['open'], errors='coerce')
+                df['high'] = pd.to_numeric(df['high'], errors='coerce')
+                df['low'] = pd.to_numeric(df['low'], errors='coerce')
+                df['close'] = pd.to_numeric(df['close'], errors='coerce')
+                
+                logger.debug(f"📊 VOL DEBUG PARSE: First 3 volumes: {df['volume'].head(3).tolist()}")
             else:
                 # List format (legacy API)
                 df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
