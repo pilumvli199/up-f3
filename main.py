@@ -131,7 +131,7 @@ Quality > Quantity 💯
 ━━━━━━━━━━━━━━━━━━━━
 """
         
-        await self.telegram.send_alert(startup_msg)
+        await self.telegram.send(startup_msg)
         logger.info("✅ Bot initialized successfully")
         logger.info(f"📅 Monthly Futures: {futures_contract} (Expiry: {monthly_expiry})")
         logger.info(f"📅 Weekly Options: {weekly_expiry}")
@@ -620,7 +620,7 @@ Quality > Quantity 💯
                     }
                 )
                 
-                await self.telegram.send_alert(alert_msg)
+                await self.telegram.send(alert_msg)
                 logger.info("  ✅ Alert sent to Telegram")
             else:
                 logger.info("  No signal generated (conditions not met)")
