@@ -669,7 +669,7 @@ class DataFetcher:
     async def fetch_daily_candles(self, num_candles=20):
         """
         🆕 V3: Fetch historical candles for S/R analysis
-        Uses Historical Candle API (not intraday!)
+        Uses Historical Candle API
         Fetches 30-min data and samples for daily S/R
         """
         try:
@@ -677,42 +677,42 @@ class DataFetcher:
                 logger.error("❌ Futures symbol not initialized!")
                 return None
             
-            # Use 30minute interval (supported by historical API)
-            to_date = datetime.now(IST).strftime('%Y-%m-%d')
-            from_date = (datetime.now(IST) - timedelta(days=10)).strftime('%Y-%m-%d')
+            # Use 30minute interval from existing get_candles method
+            # This already handles authentication
+            data = await self.client.get_candles(self.client.futures_key, '30minute')
             
-            # Historical candle endpoint format
-            url = f"https://api.upstox.com/v2/historical-candle/{self.client.futures_symbol}/30minute/{to_date}/{from_date}"
-            
-            async with self.client.session.get(url, headers=self.client.headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if data.get('status') == 'success' and 'data' in data:
-                        candles = data['data'].get('candles', [])
-                        
-                        if candles:
-                            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
-                            df['timestamp'] = pd.to_datetime(df['timestamp'])
-                            df['open'] = pd.to_numeric(df['open'], errors='coerce')
-                            df['high'] = pd.to_numeric(df['high'], errors='coerce')
-                            df['low'] = pd.to_numeric(df['low'], errors='coerce')
-                            df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
-                            
-                            # Sample to get ~20-30 points across time (daily-like intervals)
-                            df = df.sort_values('timestamp')
-                            if len(df) > 100:
-                                step = max(1, len(df) // 25)  # Sample ~25 points
-                                df = df.iloc[::step].head(30)
-                            
-                            df = df.reset_index(drop=True)
-                            
-                            logger.info(f"✅ Daily S/R data: {len(df)} bars (30-min sampled)")
-                            return df
-                
-                logger.warning(f"⚠️ Daily candles API returned {response.status}")
+            if not data or 'candles' not in data:
+                logger.warning("⚠️ Daily S/R: Using 30-min fallback")
                 return None
+            
+            candles = data['candles']
+            if not candles:
+                return None
+            
+            # Parse candles
+            if isinstance(candles[0], dict):
+                df = pd.DataFrame(candles)
+            else:
+                df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
+            
+            # Convert types
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['open'] = pd.to_numeric(df['open'], errors='coerce')
+            df['high'] = pd.to_numeric(df['high'], errors='coerce')
+            df['low'] = pd.to_numeric(df['low'], errors='coerce')
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
+            
+            # Sort and sample to get ~20-30 points (daily-like)
+            df = df.sort_values('timestamp')
+            if len(df) > 100:
+                step = max(1, len(df) // 25)
+                df = df.iloc[::step].head(30)
+            
+            df = df.reset_index(drop=True)
+            
+            logger.info(f"✅ Daily S/R data: {len(df)} bars (30-min sampled)")
+            return df
                 
         except Exception as e:
             logger.error(f"❌ Daily candles error: {e}")
@@ -720,55 +720,54 @@ class DataFetcher:
     
     async def fetch_15min_candles(self, num_candles=90):
         """
-        🆕 V3: Fetch 1-min candles and resample to 15-min
-        Gets last 7 days of data for robust S/R
+        🆕 V3: Fetch candles and resample to 15-min
+        Uses existing infrastructure
         """
         try:
-            if not self.client.futures_symbol:
-                logger.error("❌ Futures symbol not initialized!")
+            if not self.client.futures_key:
+                logger.error("❌ Futures key not initialized!")
                 return None
             
-            # Fetch 1-minute candles (last 7 days)
-            to_date = datetime.now(IST).strftime('%Y-%m-%d')
-            from_date = (datetime.now(IST) - timedelta(days=7)).strftime('%Y-%m-%d')
+            # Fetch 1-minute candles using existing method
+            data = await self.client.get_candles(self.client.futures_key, '1minute')
             
-            url = f"https://api.upstox.com/v2/historical-candle/{self.client.futures_symbol}/1minute/{to_date}/{from_date}"
-            
-            async with self.client.session.get(url, headers=self.client.headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if data.get('status') == 'success' and 'data' in data:
-                        candles = data['data'].get('candles', [])
-                        
-                        if candles:
-                            df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
-                            df['timestamp'] = pd.to_datetime(df['timestamp'])
-                            df['open'] = pd.to_numeric(df['open'], errors='coerce')
-                            df['high'] = pd.to_numeric(df['high'], errors='coerce')
-                            df['low'] = pd.to_numeric(df['low'], errors='coerce')
-                            df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
-                            
-                            # Resample 1-min to 15-min using pandas
-                            df = df.set_index('timestamp')
-                            df_15min = df.resample('15T').agg({
-                                'open': 'first',
-                                'high': 'max',
-                                'low': 'min',
-                                'close': 'last',
-                                'volume': 'sum',
-                                'oi': 'last'
-                            }).dropna()
-                            
-                            df_15min = df_15min.reset_index()
-                            df_15min = df_15min.tail(num_candles)
-                            
-                            logger.info(f"✅ 15-min S/R data: {len(df_15min)} bars (resampled from 1-min)")
-                            return df_15min
-                
-                logger.warning(f"⚠️ 15-min candles API returned {response.status}")
+            if not data or 'candles' not in data:
+                logger.warning("⚠️ 15-min S/R: No data")
                 return None
+            
+            candles = data['candles']
+            if not candles or len(candles) < 30:
+                return None
+            
+            # Parse candles
+            if isinstance(candles[0], dict):
+                df = pd.DataFrame(candles)
+            else:
+                df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
+            
+            # Convert types
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df['open'] = pd.to_numeric(df['open'], errors='coerce')
+            df['high'] = pd.to_numeric(df['high'], errors='coerce')
+            df['low'] = pd.to_numeric(df['low'], errors='coerce')
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
+            
+            # Resample 1-min to 15-min
+            df = df.set_index('timestamp')
+            df_15min = df.resample('15T').agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum'
+            }).dropna()
+            
+            df_15min = df_15min.reset_index()
+            df_15min = df_15min.tail(num_candles)
+            
+            logger.info(f"✅ Intraday S/R data: {len(df_15min)} bars (resampled from 1-min)")
+            return df_15min
                 
         except Exception as e:
             logger.error(f"❌ 15-min candles error: {e}")
