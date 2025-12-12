@@ -417,6 +417,47 @@ class TechnicalAnalyzer:
             strength = 0
         
         return {'direction': direction, 'strength': strength}
+    
+    @staticmethod
+    def validate_signal_with_vwap(signal_type, price, vwap, atr):
+        """
+        Validate if signal aligns with VWAP position
+        Returns: (is_valid, reason, score)
+        """
+        if vwap is None or atr is None:
+            return True, "VWAP/ATR not available", 50
+        
+        distance = price - vwap
+        distance_abs = abs(distance)
+        
+        # Calculate score (0-100)
+        # Perfect score at VWAP, decreases with distance
+        max_distance = atr * 3.0  # 3x ATR = max acceptable
+        
+        if distance_abs > max_distance:
+            score = 0
+        else:
+            score = int(100 * (1 - distance_abs / max_distance))
+        
+        # CE_BUY validation (bullish - price should be near or above VWAP)
+        if signal_type == "CE_BUY":
+            if distance < -atr * 2.0:  # Too far below VWAP
+                return False, f"Price {distance:.0f} pts below VWAP (bearish zone)", score
+            elif distance > atr * 2.5:  # Too far above VWAP
+                return False, f"Price {distance:.0f} pts above VWAP (exhausted)", score
+            else:
+                return True, f"Price position valid ({distance:+.0f} pts from VWAP)", score
+        
+        # PE_BUY validation (bearish - price should be near or below VWAP)
+        elif signal_type == "PE_BUY":
+            if distance > atr * 2.0:  # Too far above VWAP
+                return False, f"Price {distance:.0f} pts above VWAP (bullish zone)", score
+            elif distance < -atr * 2.5:  # Too far below VWAP
+                return False, f"Price {distance:.0f} pts below VWAP (exhausted)", score
+            else:
+                return True, f"Price position valid ({distance:+.0f} pts from VWAP)", score
+        
+        return True, "Unknown signal type", 50
 
 
 # ==================== Price Action Analyzer - NEW! ====================
