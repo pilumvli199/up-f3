@@ -465,49 +465,82 @@ class PriceActionAnalyzer:
     """Simple but powerful price action patterns"""
     
     @staticmethod
-    def detect_rejection_candle(candle_dict, sr_level=None, tolerance=20):
+    def detect_rejection_candle(candle_dict, sr_level=None, tolerance=30):
         """
-        Rejection candle = Long wick at S/R level
+        Rejection candle = Long wick
+        Works with or without S/R level!
         Most reliable pattern!
         """
         if not candle_dict:
             return None
         
-        body = candle_dict['body_size']
-        high = candle_dict['high']
-        low = candle_dict['low']
-        open_price = candle_dict['open']
-        close = candle_dict['close']
-        
-        total_range = high - low
-        if total_range == 0:
+        try:
+            body = candle_dict.get('body_size', 0)
+            high = candle_dict.get('high', 0)
+            low = candle_dict.get('low', 0)
+            open_price = candle_dict.get('open', 0)
+            close = candle_dict.get('close', 0)
+            
+            if not all([high, low, open_price, close]):
+                return None
+            
+            total_range = high - low
+            if total_range == 0 or body == 0:
+                return None
+            
+            # Calculate wicks
+            upper_wick = high - max(open_price, close)
+            lower_wick = min(open_price, close) - low
+            
+            # Upper rejection (bearish)
+            if upper_wick > 2 * body and upper_wick > 15:
+                # If S/R level provided, check if near it
+                if sr_level:
+                    if abs(high - sr_level) < tolerance:
+                        return {
+                            'pattern': 'BEARISH_REJECTION',
+                            'confidence': 85,  # Higher with S/R
+                            'wick_size': round(upper_wick, 1),
+                            'near_level': sr_level,
+                            'with_sr': True
+                        }
+                else:
+                    # Still valid without S/R, lower confidence
+                    return {
+                        'pattern': 'BEARISH_REJECTION',
+                        'confidence': 70,
+                        'wick_size': round(upper_wick, 1),
+                        'near_level': None,
+                        'with_sr': False
+                    }
+            
+            # Lower rejection (bullish)
+            if lower_wick > 2 * body and lower_wick > 15:
+                # If S/R level provided, check if near it
+                if sr_level:
+                    if abs(low - sr_level) < tolerance:
+                        return {
+                            'pattern': 'BULLISH_REJECTION',
+                            'confidence': 85,  # Higher with S/R
+                            'wick_size': round(lower_wick, 1),
+                            'near_level': sr_level,
+                            'with_sr': True
+                        }
+                else:
+                    # Still valid without S/R, lower confidence
+                    return {
+                        'pattern': 'BULLISH_REJECTION',
+                        'confidence': 70,
+                        'wick_size': round(lower_wick, 1),
+                        'near_level': None,
+                        'with_sr': False
+                    }
+            
             return None
-        
-        # Calculate wicks
-        upper_wick = high - max(open_price, close)
-        lower_wick = min(open_price, close) - low
-        
-        # Upper rejection (at resistance) - BEARISH
-        if upper_wick > 2 * body and upper_wick > 10:
-            if sr_level and abs(high - sr_level) < tolerance:
-                return {
-                    'pattern': 'BEARISH_REJECTION',
-                    'confidence': 80,
-                    'wick_size': round(upper_wick, 1),
-                    'near_level': sr_level
-                }
-        
-        # Lower rejection (at support) - BULLISH
-        if lower_wick > 2 * body and lower_wick > 10:
-            if sr_level and abs(low - sr_level) < tolerance:
-                return {
-                    'pattern': 'BULLISH_REJECTION',
-                    'confidence': 80,
-                    'wick_size': round(lower_wick, 1),
-                    'near_level': sr_level
-                }
-        
-        return None
+            
+        except Exception as e:
+            logger.error(f"❌ Rejection detection error: {e}")
+            return None
     
     @staticmethod
     def detect_engulfing(df):
@@ -604,10 +637,11 @@ class SRAnalyzer:
     @staticmethod
     def find_pivot_points(df, lookback=20, distance=5):
         """
-        Find swing highs and lows
+        Find swing highs and lows - IMPROVED DETECTION
         These become S/R levels
         """
-        if df is None or len(df) < lookback:
+        if df is None or len(df) < 10:  # Relaxed minimum
+            logger.warning(f"⚠️ S/R: Insufficient data ({len(df) if df is not None else 0} candles)")
             return {'support': [], 'resistance': []}
         
         highs = df['high'].values
@@ -616,10 +650,15 @@ class SRAnalyzer:
         resistance_levels = []
         support_levels = []
         
+        # Adaptive distance based on data length
+        actual_distance = min(distance, len(highs) // 4)
+        if actual_distance < 2:
+            actual_distance = 2
+        
         # Find local maxima (resistance)
-        for i in range(distance, len(highs) - distance):
+        for i in range(actual_distance, len(highs) - actual_distance):
             is_peak = True
-            for j in range(i - distance, i + distance + 1):
+            for j in range(i - actual_distance, i + actual_distance + 1):
                 if j != i and highs[j] >= highs[i]:
                     is_peak = False
                     break
@@ -627,18 +666,38 @@ class SRAnalyzer:
                 resistance_levels.append(round(highs[i], 0))
         
         # Find local minima (support)
-        for i in range(distance, len(lows) - distance):
+        for i in range(actual_distance, len(lows) - actual_distance):
             is_valley = True
-            for j in range(i - distance, i + distance + 1):
+            for j in range(i - actual_distance, i + actual_distance + 1):
                 if j != i and lows[j] <= lows[i]:
                     is_valley = False
                     break
             if is_valley:
                 support_levels.append(round(lows[i], 0))
         
+        # Fallback if no levels found (use percentiles)
+        if not resistance_levels:
+            resistance_levels = [
+                round(np.percentile(highs, 95), 0),
+                round(np.percentile(highs, 90), 0),
+                round(np.max(highs), 0)
+            ]
+            logger.debug(f"  ⚠️ S/R: Using percentile resistance")
+        
+        if not support_levels:
+            support_levels = [
+                round(np.percentile(lows, 5), 0),
+                round(np.percentile(lows, 10), 0),
+                round(np.min(lows), 0)
+            ]
+            logger.debug(f"  ⚠️ S/R: Using percentile support")
+        
         # Remove duplicates (cluster similar levels)
-        resistance_levels = SRAnalyzer._cluster_levels(resistance_levels, cluster_distance=20)
-        support_levels = SRAnalyzer._cluster_levels(support_levels, cluster_distance=20)
+        resistance_levels = SRAnalyzer._cluster_levels(resistance_levels, cluster_distance=15)
+        support_levels = SRAnalyzer._cluster_levels(support_levels, cluster_distance=15)
+        
+        # Log what was found
+        logger.debug(f"  Found {len(support_levels)} support, {len(resistance_levels)} resistance")
         
         return {
             'support': sorted(support_levels),
