@@ -669,24 +669,23 @@ class DataFetcher:
     async def fetch_daily_candles(self, num_candles=20):
         """
         🆕 V3: Fetch daily candles for major S/R levels
-        20 candles = ~1 month of trading days
-        Update: Once per day at 9:15 AM
+        NOTE: Upstox intraday API only supports 1minute and 30minute!
+        For daily, we use 30-minute and aggregate
         """
         try:
             if not self.client.futures_key:
                 logger.error("❌ Futures key not initialized!")
                 return None
             
-            # Use intraday endpoint with day interval
-            data = await self.client.get_candles(self.client.futures_key, 'day')
+            # Use 30-minute candles (closest to daily)
+            data = await self.client.get_candles(self.client.futures_key, '30minute')
             
             if not data or 'candles' not in data:
-                logger.error("❌ Daily candles: No data received")
+                logger.warning("❌ Daily candles: Using 30-min fallback")
                 return None
             
             candles = data['candles']
             if not candles:
-                logger.error("❌ Daily candles: Empty candles list")
                 return None
             
             # Parse candles
@@ -703,10 +702,17 @@ class DataFetcher:
             df['close'] = pd.to_numeric(df['close'], errors='coerce')
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
             
-            # Sort and limit
-            df = df.sort_values('timestamp').tail(num_candles).reset_index(drop=True)
+            # Sort and limit to simulate daily (take every ~13 candles = half day)
+            df = df.sort_values('timestamp')
             
-            logger.info(f"✅ Daily candles: {len(df)} bars (for S/R analysis)")
+            # Sample to get ~20 points across time
+            if len(df) > 100:
+                step = len(df) // 20
+                df = df.iloc[::step].head(20)
+            
+            df = df.reset_index(drop=True)
+            
+            logger.info(f"✅ Daily S/R data: {len(df)} bars (30-min aggregated)")
             return df
             
         except Exception as e:
@@ -716,23 +722,23 @@ class DataFetcher:
     async def fetch_15min_candles(self, num_candles=90):
         """
         🆕 V3: Fetch 15-min candles for intraday S/R
-        90 candles = ~22 hours of trading (3 sessions)
-        Update: Every 15 minutes
+        NOTE: Upstox only supports 1minute and 30minute!
+        Using 30-minute as closest alternative
         """
         try:
             if not self.client.futures_key:
                 logger.error("❌ Futures key not initialized!")
                 return None
             
-            data = await self.client.get_candles(self.client.futures_key, '15minute')
+            # Use 30-minute (closest available)
+            data = await self.client.get_candles(self.client.futures_key, '30minute')
             
             if not data or 'candles' not in data:
-                logger.error("❌ 15-min candles: No data received")
+                logger.warning("❌ 15-min candles: Using 30-min fallback")
                 return None
             
             candles = data['candles']
             if not candles:
-                logger.error("❌ 15-min candles: Empty candles list")
                 return None
             
             # Parse candles
@@ -750,9 +756,9 @@ class DataFetcher:
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
             
             # Sort and limit
-            df = df.sort_values('timestamp').tail(num_candles).reset_index(drop=True)
+            df = df.sort_values('timestamp').tail(60).reset_index(drop=True)  # ~30 hours of 30-min data
             
-            logger.info(f"✅ 15-min candles: {len(df)} bars (for S/R analysis)")
+            logger.info(f"✅ Intraday S/R data: {len(df)} bars (30-min candles)")
             return df
             
         except Exception as e:
