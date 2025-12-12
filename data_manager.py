@@ -672,8 +672,8 @@ class DataFetcher:
         Uses HISTORICAL API endpoint directly!
         """
         try:
-            if not self.client.access_token or not self.client.futures_symbol:
-                logger.error("❌ Token or symbol missing!")
+            if not self.client.futures_symbol:
+                logger.error("❌ Futures symbol missing!")
                 return None
             
             # Calculate dates (last 10 days to get enough 30-min candles)
@@ -684,13 +684,12 @@ class DataFetcher:
             to_date_str = to_date.strftime('%Y-%m-%d')
             from_date_str = from_date.strftime('%Y-%m-%d')
             
-            # Historical endpoint (NOT intraday!)
-            # Format: /historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}
+            # Historical endpoint
             url = f"https://api.upstox.com/v2/historical-candle/{self.client.futures_symbol}/30minute/{to_date_str}/{from_date_str}"
             
             headers = {
                 'Accept': 'application/json',
-                'Authorization': f'Bearer {self.client.access_token}'
+                'Authorization': f'Bearer {UPSTOX_ACCESS_TOKEN}'
             }
             
             async with self.client.session.get(url, headers=headers) as response:
@@ -734,8 +733,8 @@ class DataFetcher:
         Uses HISTORICAL API for multi-day data!
         """
         try:
-            if not self.client.access_token or not self.client.futures_symbol:
-                logger.error("❌ Token or symbol missing!")
+            if not self.client.futures_symbol:
+                logger.error("❌ Futures symbol missing!")
                 return None
             
             # Get last 7 days of 1-min candles
@@ -750,7 +749,7 @@ class DataFetcher:
             
             headers = {
                 'Accept': 'application/json',
-                'Authorization': f'Bearer {self.client.access_token}'
+                'Authorization': f'Bearer {UPSTOX_ACCESS_TOKEN}'
             }
             
             async with self.client.session.get(url, headers=headers) as response:
