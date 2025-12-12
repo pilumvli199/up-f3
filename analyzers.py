@@ -113,6 +113,60 @@ class OIAnalyzer:
                 return False, f"ATM {new_atm} too far from futures {futures_price:.2f} (diff: {futures_to_atm:.0f})"
         
         return True, f"ATM valid (shift: {new_atm - previous_atm:+.0f} pts)"
+    
+    @staticmethod
+    def get_atm_data(strike_data, atm_strike):
+        """Get ATM strike data"""
+        if not strike_data or atm_strike not in strike_data:
+            return {}
+        return strike_data[atm_strike]
+    
+    @staticmethod
+    def get_atm_oi_changes(strike_data, atm_strike, previous_strike_data):
+        """
+        Calculate ATM OI changes vs previous snapshot
+        Used for instant ATM battle detection
+        """
+        if not strike_data or atm_strike not in strike_data:
+            return {
+                'has_previous_data': False,
+                'ce_change': 0,
+                'pe_change': 0,
+                'ce_change_pct': 0,
+                'pe_change_pct': 0
+            }
+        
+        current = strike_data[atm_strike]
+        
+        if not previous_strike_data or atm_strike not in previous_strike_data:
+            return {
+                'has_previous_data': False,
+                'ce_change': 0,
+                'pe_change': 0,
+                'ce_change_pct': 0,
+                'pe_change_pct': 0
+            }
+        
+        previous = previous_strike_data[atm_strike]
+        
+        current_ce = current.get('ce_oi', 0)
+        current_pe = current.get('pe_oi', 0)
+        prev_ce = previous.get('ce_oi', 0)
+        prev_pe = previous.get('pe_oi', 0)
+        
+        ce_change = current_ce - prev_ce
+        pe_change = current_pe - prev_pe
+        
+        ce_change_pct = (ce_change / prev_ce * 100) if prev_ce > 0 else 0
+        pe_change_pct = (pe_change / prev_pe * 100) if prev_pe > 0 else 0
+        
+        return {
+            'has_previous_data': True,
+            'ce_change': ce_change,
+            'pe_change': pe_change,
+            'ce_change_pct': round(ce_change_pct, 1),
+            'pe_change_pct': round(pe_change_pct, 1)
+        }
 
 
 # ==================== Volume Analyzer ====================
