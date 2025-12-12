@@ -151,7 +151,7 @@ Quality > Quantity 💯
                     import traceback
                     traceback.print_exc()
                 
-                await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+                await asyncio.sleep(60)  # 60 seconds = 1 minute scan
         
         except KeyboardInterrupt:
             logger.info("🛑 Bot stopped by user")
@@ -357,7 +357,7 @@ Quality > Quantity 💯
         for strike, data in strike_data.items():
             self.memory.save_strike(strike, data)
         
-        first_snapshot = self.memory.get_first_snapshot_time()
+        first_snapshot = self.memory.first_snapshot_time
         if not first_snapshot:
             logger.info(f"📍 FIRST SNAPSHOT at {now.strftime('%H:%M')} - BASE REFERENCE")
             self.memory.mark_first_snapshot(now)
