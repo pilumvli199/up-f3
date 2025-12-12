@@ -167,6 +167,34 @@ class OIAnalyzer:
             'ce_change_pct': round(ce_change_pct, 1),
             'pe_change_pct': round(pe_change_pct, 1)
         }
+    
+    @staticmethod
+    def validate_atm_data(atm_data):
+        """
+        Validate ATM strike has valid OI data
+        Prevents trading on bad data
+        """
+        if not atm_data:
+            return False, "ATM data is empty"
+        
+        ce_oi = atm_data.get('ce_oi', 0)
+        pe_oi = atm_data.get('pe_oi', 0)
+        
+        if ce_oi == 0 and pe_oi == 0:
+            return False, "ATM has zero OI on both sides"
+        
+        if ce_oi == 0:
+            return False, "ATM CE has zero OI (suspicious!)"
+        
+        if pe_oi == 0:
+            return False, "ATM PE has zero OI (suspicious!)"
+        
+        # Check if OI is reasonable (not too low)
+        MIN_ATM_OI = 10000
+        if ce_oi < MIN_ATM_OI or pe_oi < MIN_ATM_OI:
+            return False, f"ATM OI too low (CE: {ce_oi:,.0f}, PE: {pe_oi:,.0f})"
+        
+        return True, f"ATM data valid (CE: {ce_oi:,.0f}, PE: {pe_oi:,.0f})"
 
 
 # ==================== Volume Analyzer ====================
