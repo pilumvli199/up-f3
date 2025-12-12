@@ -682,7 +682,7 @@ class DataFetcher:
             from_date = (datetime.now(IST) - timedelta(days=10)).strftime('%Y-%m-%d')
             
             # Historical candle endpoint format
-            url = f"{UPSTOX_API_BASE}/historical-candle/{self.client.futures_symbol}/30minute/{to_date}/{from_date}"
+            url = f"https://api.upstox.com/v2/historical-candle/{self.client.futures_symbol}/30minute/{to_date}/{from_date}"
             
             async with self.client.session.get(url, headers=self.client.headers) as response:
                 if response.status == 200:
@@ -732,7 +732,7 @@ class DataFetcher:
             to_date = datetime.now(IST).strftime('%Y-%m-%d')
             from_date = (datetime.now(IST) - timedelta(days=7)).strftime('%Y-%m-%d')
             
-            url = f"{UPSTOX_API_BASE}/historical-candle/{self.client.futures_symbol}/1minute/{to_date}/{from_date}"
+            url = f"https://api.upstox.com/v2/historical-candle/{self.client.futures_symbol}/1minute/{to_date}/{from_date}"
             
             async with self.client.session.get(url, headers=self.client.headers) as response:
                 if response.status == 200:
