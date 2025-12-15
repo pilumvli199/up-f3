@@ -339,6 +339,10 @@ Quality > Quantity 💯
         self.previous_atm = atm
         
         futures_price = futures_ltp
+        
+        # 🆕 V3.5: Track price history for OI + Price analysis
+        self.data_fetcher.update_price_history(futures_price)
+        
         logger.info(f"\n💹 PRICES & ATM:")
         logger.info(f"  Spot: ₹{spot:.2f} (reference only)")
         logger.info(f"  Futures LIVE: ₹{futures_price:.2f} (TRADING PRICE)")
@@ -390,6 +394,31 @@ Quality > Quantity 💯
         logger.info(f"  5m:  CE={ce_5m:+.1f}% PE={pe_5m:+.1f}% {'✅' if has_5m else '⏳'}")
         logger.info(f"  15m: CE={ce_15m:+.1f}% PE={pe_15m:+.1f}% {'✅' if has_15m else '⏳'}")
         logger.info(f"  ATM {atm}: CE={atm_ce_15m:+.1f}% PE={atm_pe_15m:+.1f}%")
+        
+        # 🆕 V3.5: OI + Price Direction Analysis
+        price_5m_ago = self.data_fetcher.get_price_at_time(5)
+        price_15m_ago = self.data_fetcher.get_price_at_time(15)
+        
+        oi_price_5m = None
+        oi_price_15m = None
+        
+        if price_5m_ago and has_5m:
+            oi_price_5m = self.oi_analyzer.analyze_oi_with_price(
+                ce_5m, pe_5m, futures_price, price_5m_ago
+            )
+            logger.info(f"\n🔥 5m OI+PRICE: {oi_price_5m['scenario']}")
+            logger.info(f"   Confidence: {oi_price_5m['confidence']}% | Bias: {oi_price_5m['bias']}")
+            logger.info(f"   Reason: {oi_price_5m['reason']}")
+            logger.info(f"   Action: {oi_price_5m['action']}")
+        
+        if price_15m_ago and has_15m:
+            oi_price_15m = self.oi_analyzer.analyze_oi_with_price(
+                ce_15m, pe_15m, futures_price, price_15m_ago
+            )
+            logger.info(f"\n🔥 15m OI+PRICE: {oi_price_15m['scenario']}")
+            logger.info(f"   Confidence: {oi_price_15m['confidence']}% | Bias: {oi_price_15m['bias']}")
+            logger.info(f"   Reason: {oi_price_15m['reason']}")
+            logger.info(f"   Action: {oi_price_15m['action']}")
         
         # ========== STEP 4: TECHNICAL ANALYSIS ==========
         
@@ -557,6 +586,15 @@ Quality > Quantity 💯
             
             if is_conflicting:
                 logger.info(f"🚫 SIGNALS BLOCKED - {conflict_reason}")
+                return
+            
+            # 🆕 V3.5: Block on weak OI+Price scenarios
+            if oi_price_15m and oi_price_15m['action'] == 'AVOID':
+                logger.info(f"🚫 SIGNALS BLOCKED - {oi_price_15m['scenario']} (weak move, avoid trading)")
+                return
+            
+            if oi_price_5m and oi_price_5m['action'] == 'WAIT':
+                logger.info(f"⏸️  SIGNALS PAUSED - {oi_price_5m['scenario']} (unclear, waiting for clarity)")
                 return
             
             # Generate signal with V3 features
