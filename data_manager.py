@@ -505,6 +505,59 @@ class RedisBrain:
             return
         logger.info("📚 Skipping previous day data")
         self.premarket_loaded = True
+    
+    def update_price_history(self, price):
+        """
+        🆕 V3.5: Track price over time for OI + Price analysis
+        Stores (timestamp, price) pairs
+        """
+        try:
+            current_time = datetime.now(IST)
+            
+            # Add current price with timestamp
+            self.price_history_with_time.append((current_time, price))
+            
+            # Keep only last 20 minutes
+            if len(self.price_history_with_time) > self.price_history_limit:
+                self.price_history_with_time = self.price_history_with_time[-self.price_history_limit:]
+            
+        except Exception as e:
+            logger.error(f"❌ Price history update error: {e}")
+    
+    def get_price_at_time(self, minutes_ago):
+        """
+        🆕 V3.5: Get price from N minutes ago
+        
+        Returns:
+            price N minutes ago, or None if not available
+        """
+        try:
+            if not self.price_history_with_time or len(self.price_history_with_time) < 2:
+                return None
+            
+            current_time = datetime.now(IST)
+            target_time = current_time - timedelta(minutes=minutes_ago)
+            
+            # Find closest price to target time
+            closest_price = None
+            min_diff = float('inf')
+            
+            for timestamp, price in self.price_history_with_time:
+                time_diff = abs((timestamp - target_time).total_seconds())
+                
+                if time_diff < min_diff:
+                    min_diff = time_diff
+                    closest_price = price
+                
+                # If within 2 minutes tolerance, use it
+                if time_diff < 120:  # 2 minutes tolerance
+                    return price
+            
+            return closest_price
+            
+        except Exception as e:
+            logger.error(f"❌ Price history lookup error: {e}")
+            return None
 
 
 # ==================== Data Fetcher V2 ====================
@@ -530,6 +583,10 @@ class DataFetcher:
         self.previous_cumulative_volume = 0
         self.previous_volume_time = None
         self.volume_history = []  # Store last 10 deltas
+        
+        # 🆕 V3.5: Price history for OI + Price analysis
+        self.price_history_with_time = []  # [(timestamp, price), ...]
+        self.price_history_limit = 20  # Keep last 20 minutes
         
         # Live VWAP tracking
         self.live_vwap = None
@@ -918,6 +975,53 @@ class DataFetcher:
     def is_candle_frozen(self):
         """Check if candle API is frozen"""
         return self.candle_frozen
+    
+    def update_price_history(self, price):
+        """
+        🆕 V3.5: Track price over time for OI + Price analysis
+        """
+        try:
+            current_time = datetime.now(IST)
+            self.price_history_with_time.append((current_time, price))
+            
+            # Keep only last 20 minutes
+            if len(self.price_history_with_time) > self.price_history_limit:
+                self.price_history_with_time = self.price_history_with_time[-self.price_history_limit:]
+            
+        except Exception as e:
+            logger.error(f"❌ Price history error: {e}")
+    
+    def get_price_at_time(self, minutes_ago):
+        """
+        🆕 V3.5: Get price from N minutes ago
+        Returns: price or None
+        """
+        try:
+            if not self.price_history_with_time or len(self.price_history_with_time) < 2:
+                return None
+            
+            current_time = datetime.now(IST)
+            target_time = current_time - timedelta(minutes=minutes_ago)
+            
+            # Find closest price to target time
+            closest_price = None
+            min_diff = float('inf')
+            
+            for timestamp, price in self.price_history_with_time:
+                time_diff = abs((timestamp - target_time).total_seconds())
+                
+                if time_diff < min_diff:
+                    min_diff = time_diff
+                    closest_price = price
+                
+                # If within 2 minutes tolerance, use it
+                if time_diff < 120:
+                    return price
+            
+            return closest_price
+            
+        except Exception as e:
+            return None
     
     async def fetch_option_chain(self, reference_price):
         """Fetch option chain"""
