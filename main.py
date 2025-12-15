@@ -446,22 +446,6 @@ Quality > Quantity 💯
             logger.info(f"   Confidence: {max_pain_analysis['confidence']}%")
             logger.info(f"   Reason: {max_pain_analysis['reason']}")
         
-        # 🆕 V3.5: Gamma Wall Detection
-        gamma_analysis = self.oi_analyzer.detect_gamma_walls(
-            strike_data, 
-            futures_price, 
-            price_momentum=momentum
-        )
-        if gamma_analysis['nearest_wall']:
-            logger.info(f"\n⚡ GAMMA WALL ANALYSIS:")
-            logger.info(f"   Nearest Wall: {gamma_analysis['nearest_wall']['strike']} ({gamma_analysis['nearest_wall']['type']})")
-            logger.info(f"   Distance: {gamma_analysis['nearest_wall']['distance']:.1f} pts")
-            logger.info(f"   OI: {gamma_analysis['nearest_wall']['total_oi']:,.0f} (CE: {gamma_analysis['nearest_wall']['ce_oi']:,.0f}, PE: {gamma_analysis['nearest_wall']['pe_oi']:,.0f})")
-            logger.info(f"   Strength: {gamma_analysis['nearest_wall']['strength']}")
-            logger.info(f"   Signal: {gamma_analysis['signal'] or 'None'}")
-            logger.info(f"   Confidence: {gamma_analysis['confidence']}%")
-            logger.info(f"   Reason: {gamma_analysis['reason']}")
-        
         # VWAP with fallback
         vwap = self.technical_analyzer.calculate_vwap(
             futures_df, 
@@ -485,6 +469,22 @@ Quality > Quantity 💯
         vwap_dist = self.technical_analyzer.calculate_vwap_distance(futures_price, vwap) if vwap else 0
         candle = self.technical_analyzer.analyze_candle(futures_df)
         momentum = self.technical_analyzer.detect_momentum(futures_df)
+        
+        # 🆕 V3.5: Gamma Wall Detection (after momentum!)
+        gamma_analysis = self.oi_analyzer.detect_gamma_walls(
+            strike_data, 
+            futures_price, 
+            price_momentum=momentum
+        )
+        if gamma_analysis['nearest_wall']:
+            logger.info(f"\n⚡ GAMMA WALL ANALYSIS:")
+            logger.info(f"   Nearest Wall: {gamma_analysis['nearest_wall']['strike']} ({gamma_analysis['nearest_wall']['type']})")
+            logger.info(f"   Distance: {gamma_analysis['nearest_wall']['distance']:.1f} pts")
+            logger.info(f"   OI: {gamma_analysis['nearest_wall']['total_oi']:,.0f} (CE: {gamma_analysis['nearest_wall']['ce_oi']:,.0f}, PE: {gamma_analysis['nearest_wall']['pe_oi']:,.0f})")
+            logger.info(f"   Strength: {gamma_analysis['nearest_wall']['strength']}")
+            logger.info(f"   Signal: {gamma_analysis['signal'] or 'None'}")
+            logger.info(f"   Confidence: {gamma_analysis['confidence']}%")
+            logger.info(f"   Reason: {gamma_analysis['reason']}")
         
         # Volume analysis with DELTA
         vol_trend = self.volume_analyzer.analyze_volume_trend(
