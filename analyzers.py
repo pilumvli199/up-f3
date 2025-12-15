@@ -18,7 +18,117 @@ logger = setup_logger("analyzers")
 
 # ==================== OI Analyzer ====================
 class OIAnalyzer:
-    """Open Interest analysis - UNCHANGED (already perfect!)"""
+    """
+    🆕 V3.5: Open Interest + Price Direction Analysis
+    Combines OI changes with price movement for clear signals!
+    """
+    
+    @staticmethod
+    def analyze_oi_with_price(ce_change, pe_change, price_now, price_before):
+        """
+        🔥 THE GAME CHANGER: OI + Price Direction!
+        
+        Returns clarity on market direction:
+        - Long Buildup (Strong Bullish)
+        - Short Buildup (Strong Bearish)  
+        - Short Covering (Weak Bullish)
+        - Long Unwinding (Weak Bearish)
+        """
+        if price_before is None or price_now is None:
+            return {
+                'scenario': 'INSUFFICIENT_DATA',
+                'confidence': 0,
+                'bias': 'neutral'
+            }
+        
+        try:
+            # Calculate price direction
+            price_change = ((price_now - price_before) / price_before) * 100
+            price_up = price_change > 0.05  # +0.05% threshold
+            price_down = price_change < -0.05
+            
+            # Thresholds for OI changes
+            CE_BUILDING = ce_change > 3.0
+            CE_UNWINDING = ce_change < -3.0
+            PE_BUILDING = pe_change > 3.0
+            PE_UNWINDING = pe_change < -3.0
+            
+            # 🔥 THE 4 SCENARIOS:
+            
+            # Scenario 1: LONG BUILDUP (OI ↑ + Price ↑)
+            if CE_BUILDING and price_up:
+                return {
+                    'scenario': 'LONG_BUILDUP',
+                    'confidence': 85,
+                    'bias': 'strongly_bullish',
+                    'reason': f'CE building {ce_change:+.1f}% + Price rising {price_change:+.2f}% = Fresh call buying',
+                    'action': 'CE_BUY'
+                }
+            
+            # Scenario 2: SHORT BUILDUP (OI ↑ + Price ↓)
+            if PE_BUILDING and price_down:
+                return {
+                    'scenario': 'SHORT_BUILDUP',
+                    'confidence': 85,
+                    'bias': 'strongly_bearish',
+                    'reason': f'PE building {pe_change:+.1f}% + Price falling {price_change:+.2f}% = Fresh put buying',
+                    'action': 'PE_BUY'
+                }
+            
+            # Scenario 3: SHORT COVERING (OI ↓ + Price ↑)
+            if CE_UNWINDING and price_up:
+                return {
+                    'scenario': 'SHORT_COVERING',
+                    'confidence': 60,
+                    'bias': 'weakly_bullish',
+                    'reason': f'CE unwinding {ce_change:+.1f}% + Price rising {price_change:+.2f}% = Shorts exiting',
+                    'action': 'AVOID'
+                }
+            
+            if PE_UNWINDING and price_up:
+                return {
+                    'scenario': 'SHORT_COVERING',
+                    'confidence': 65,
+                    'bias': 'weakly_bullish',
+                    'reason': f'PE unwinding {pe_change:+.1f}% + Price rising {price_change:+.2f}% = Bears exiting',
+                    'action': 'AVOID'
+                }
+            
+            # Scenario 4: LONG UNWINDING (OI ↓ + Price ↓)
+            if PE_UNWINDING and price_down:
+                return {
+                    'scenario': 'LONG_UNWINDING',
+                    'confidence': 60,
+                    'bias': 'weakly_bearish',
+                    'reason': f'PE unwinding {pe_change:+.1f}% + Price falling {price_change:+.2f}% = Longs exiting',
+                    'action': 'AVOID'
+                }
+            
+            if CE_UNWINDING and price_down:
+                return {
+                    'scenario': 'LONG_UNWINDING',
+                    'confidence': 65,
+                    'bias': 'weakly_bearish',
+                    'reason': f'CE unwinding {ce_change:+.1f}% + Price falling {price_change:+.2f}% = Bulls exiting',
+                    'action': 'AVOID'
+                }
+            
+            # Mixed/Unclear
+            return {
+                'scenario': 'NEUTRAL',
+                'confidence': 40,
+                'bias': 'neutral',
+                'reason': f'Mixed signals: CE {ce_change:+.1f}%, PE {pe_change:+.1f}%, Price {price_change:+.2f}%',
+                'action': 'WAIT'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ OI+Price analysis error: {e}")
+            return {
+                'scenario': 'ERROR',
+                'confidence': 0,
+                'bias': 'neutral'
+            }
     
     @staticmethod
     def calculate_total_oi(strike_data):
