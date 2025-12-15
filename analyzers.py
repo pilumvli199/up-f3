@@ -157,6 +157,294 @@ class OIAnalyzer:
         return round(min(pcr, 10.0), 2)
     
     @staticmethod
+    def analyze_pcr_zone(pcr):
+        """
+        🆕 V3.5: PCR Zone Analysis
+        Identifies oversold/overbought conditions
+        
+        Returns:
+            dict with zone, signal, confidence, reason
+        """
+        try:
+            if pcr > 1.2:
+                return {
+                    'zone': 'OVERSOLD',
+                    'signal': 'CE_BUY',
+                    'confidence': 75,
+                    'bias': 'bullish',
+                    'reason': f'PCR {pcr:.2f} > 1.2 = Too much fear, bullish reversal expected',
+                    'strength': 'strong' if pcr > 1.4 else 'medium'
+                }
+            elif pcr < 0.8:
+                return {
+                    'zone': 'OVERBOUGHT',
+                    'signal': 'PE_BUY',
+                    'confidence': 75,
+                    'bias': 'bearish',
+                    'reason': f'PCR {pcr:.2f} < 0.8 = Too much greed, bearish reversal expected',
+                    'strength': 'strong' if pcr < 0.6 else 'medium'
+                }
+            else:
+                return {
+                    'zone': 'NEUTRAL',
+                    'signal': None,
+                    'confidence': 50,
+                    'bias': 'neutral',
+                    'reason': f'PCR {pcr:.2f} in neutral range (0.8-1.2)',
+                    'strength': 'weak'
+                }
+        except Exception as e:
+            logger.error(f"❌ PCR zone error: {e}")
+            return {'zone': 'ERROR', 'signal': None, 'confidence': 0}
+    
+    @staticmethod
+    def calculate_max_pain(strike_data, current_price):
+        """
+        🆕 V3.5: Max Pain Calculation
+        Find price where most options expire worthless
+        
+        Returns:
+            dict with max_pain_level, distance, signal
+        """
+        try:
+            if not strike_data or len(strike_data) < 3:
+                return {
+                    'max_pain': None,
+                    'distance': 0,
+                    'signal': None,
+                    'confidence': 0
+                }
+            
+            strikes = sorted(strike_data.keys())
+            min_pain = float('inf')
+            max_pain_strike = None
+            
+            for strike in strikes:
+                # Calculate total pain at this strike
+                call_pain = 0
+                put_pain = 0
+                
+                for s in strikes:
+                    if s in strike_data:
+                        ce_oi = strike_data[s].get('ce_oi', 0)
+                        pe_oi = strike_data[s].get('pe_oi', 0)
+                        
+                        # Call pain: loss if price > strike
+                        if strike > s:
+                            call_pain += (strike - s) * ce_oi
+                        
+                        # Put pain: loss if price < strike
+                        if strike < s:
+                            put_pain += (s - strike) * pe_oi
+                
+                total_pain = call_pain + put_pain
+                
+                if total_pain < min_pain:
+                    min_pain = total_pain
+                    max_pain_strike = strike
+            
+            if not max_pain_strike:
+                return {
+                    'max_pain': None,
+                    'distance': 0,
+                    'signal': None,
+                    'confidence': 0
+                }
+            
+            distance = current_price - max_pain_strike
+            
+            # Generate signal based on distance
+            if abs(distance) < 50:
+                signal_result = {
+                    'max_pain': max_pain_strike,
+                    'distance': round(distance, 1),
+                    'signal': None,
+                    'confidence': 40,
+                    'reason': f'Price at Max Pain {max_pain_strike} (within 50 pts)',
+                    'bias': 'neutral'
+                }
+            elif distance > 100:
+                signal_result = {
+                    'max_pain': max_pain_strike,
+                    'distance': round(distance, 1),
+                    'signal': 'PE_BUY',
+                    'confidence': 70,
+                    'reason': f'Price {distance:.0f} pts above Max Pain → bearish pull expected',
+                    'bias': 'bearish',
+                    'target': max_pain_strike
+                }
+            elif distance < -100:
+                signal_result = {
+                    'max_pain': max_pain_strike,
+                    'distance': round(distance, 1),
+                    'signal': 'CE_BUY',
+                    'confidence': 70,
+                    'reason': f'Price {abs(distance):.0f} pts below Max Pain → bullish pull expected',
+                    'bias': 'bullish',
+                    'target': max_pain_strike
+                }
+            else:
+                signal_result = {
+                    'max_pain': max_pain_strike,
+                    'distance': round(distance, 1),
+                    'signal': 'WAIT',
+                    'confidence': 50,
+                    'reason': f'Price {abs(distance):.0f} pts from Max Pain (moderate)',
+                    'bias': 'neutral'
+                }
+            
+            return signal_result
+            
+        except Exception as e:
+            logger.error(f"❌ Max Pain calculation error: {e}")
+            return {
+                'max_pain': None,
+                'distance': 0,
+                'signal': None,
+                'confidence': 0
+            }
+    
+    @staticmethod
+    def detect_gamma_walls(strike_data, current_price, price_momentum='neutral'):
+        """
+        🆕 V3.5: Gamma Wall Detection + Signal Generation
+        Find strikes with abnormally high OI (gamma zones)
+        
+        Returns:
+            dict with walls, nearest_wall, signal
+        """
+        try:
+            if not strike_data or len(strike_data) < 3:
+                return {
+                    'walls': [],
+                    'nearest_wall': None,
+                    'signal': None,
+                    'confidence': 0
+                }
+            
+            # Calculate average OI
+            total_ois = []
+            for data in strike_data.values():
+                ce_oi = data.get('ce_oi', 0)
+                pe_oi = data.get('pe_oi', 0)
+                total_ois.append(ce_oi + pe_oi)
+            
+            if not total_ois:
+                return {'walls': [], 'nearest_wall': None, 'signal': None}
+            
+            avg_oi = sum(total_ois) / len(total_ois)
+            
+            # Find gamma walls (2x average OI)
+            gamma_walls = []
+            
+            for strike, data in strike_data.items():
+                ce_oi = data.get('ce_oi', 0)
+                pe_oi = data.get('pe_oi', 0)
+                total_oi = ce_oi + pe_oi
+                
+                # Gamma wall = 2x average OI
+                if total_oi > avg_oi * 2:
+                    distance = abs(current_price - strike)
+                    wall_type = 'resistance' if strike > current_price else 'support'
+                    
+                    gamma_walls.append({
+                        'strike': strike,
+                        'total_oi': total_oi,
+                        'ce_oi': ce_oi,
+                        'pe_oi': pe_oi,
+                        'distance': round(distance, 1),
+                        'type': wall_type,
+                        'strength': 'very_strong' if total_oi > avg_oi * 3 else 'strong'
+                    })
+            
+            # Sort by distance (nearest first)
+            gamma_walls.sort(key=lambda x: x['distance'])
+            
+            if not gamma_walls:
+                return {
+                    'walls': [],
+                    'nearest_wall': None,
+                    'signal': None,
+                    'confidence': 50,
+                    'reason': 'No gamma walls detected'
+                }
+            
+            nearest_wall = gamma_walls[0]
+            
+            # Generate signal based on nearest wall
+            if nearest_wall['distance'] < 30:
+                # Close to gamma wall - critical zone!
+                
+                if nearest_wall['type'] == 'resistance':
+                    if price_momentum == 'bullish':
+                        signal_result = {
+                            'walls': gamma_walls[:3],  # Top 3 walls
+                            'nearest_wall': nearest_wall,
+                            'signal': 'WATCH_BREAKOUT',
+                            'confidence': 65,
+                            'reason': f"At gamma wall resistance {nearest_wall['strike']} - watch for breakthrough",
+                            'bias': 'cautious_bullish'
+                        }
+                    else:
+                        signal_result = {
+                            'walls': gamma_walls[:3],
+                            'nearest_wall': nearest_wall,
+                            'signal': 'PE_BUY',
+                            'confidence': 80,
+                            'reason': f"Rejection at gamma wall {nearest_wall['strike']} - strong resistance",
+                            'bias': 'bearish'
+                        }
+                
+                elif nearest_wall['type'] == 'support':
+                    if price_momentum == 'bearish':
+                        signal_result = {
+                            'walls': gamma_walls[:3],
+                            'nearest_wall': nearest_wall,
+                            'signal': 'WATCH_BREAKDOWN',
+                            'confidence': 65,
+                            'reason': f"At gamma wall support {nearest_wall['strike']} - watch for breakdown",
+                            'bias': 'cautious_bearish'
+                        }
+                    else:
+                        signal_result = {
+                            'walls': gamma_walls[:3],
+                            'nearest_wall': nearest_wall,
+                            'signal': 'CE_BUY',
+                            'confidence': 80,
+                            'reason': f"Bounce from gamma wall {nearest_wall['strike']} - strong support",
+                            'bias': 'bullish'
+                        }
+                
+                return signal_result
+            
+            else:
+                # Not close to wall
+                return {
+                    'walls': gamma_walls[:3],
+                    'nearest_wall': nearest_wall,
+                    'signal': None,
+                    'confidence': 50,
+                    'reason': f"Nearest gamma wall at {nearest_wall['strike']} ({nearest_wall['distance']:.0f} pts away)",
+                    'bias': 'neutral'
+                }
+            
+        except Exception as e:
+            logger.error(f"❌ Gamma wall detection error: {e}")
+            return {
+                'walls': [],
+                'nearest_wall': None,
+                'signal': None,
+                'confidence': 0
+            }
+    
+    @staticmethod
+    def calculate_pcr(total_pe, total_ce):
+        if total_ce == 0:
+            return 1.0 if total_pe == 0 else 10.0
+        pcr = total_pe / total_ce
+        return round(min(pcr, 10.0), 2)
+    
+    @staticmethod
     def detect_unwinding(ce_5m, ce_15m, pe_5m, pe_15m):
         ce_unwinding = (ce_15m < -MIN_OI_15M_FOR_ENTRY and ce_5m < -MIN_OI_5M_FOR_ENTRY)
         if ce_15m < -STRONG_OI_15M_THRESHOLD and ce_5m < -STRONG_OI_5M_THRESHOLD:
