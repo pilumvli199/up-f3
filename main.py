@@ -426,6 +426,42 @@ Quality > Quantity 💯
         
         pcr = self.oi_analyzer.calculate_pcr(total_pe, total_ce)
         
+        # 🆕 V3.5: PCR Zone Analysis
+        pcr_zone = self.oi_analyzer.analyze_pcr_zone(pcr)
+        logger.info(f"\n📊 PCR ANALYSIS:")
+        logger.info(f"   PCR: {pcr:.2f}")
+        logger.info(f"   Zone: {pcr_zone['zone']}")
+        logger.info(f"   Signal: {pcr_zone['signal'] or 'None'}")
+        logger.info(f"   Confidence: {pcr_zone['confidence']}%")
+        logger.info(f"   Reason: {pcr_zone['reason']}")
+        
+        # 🆕 V3.5: Max Pain Analysis
+        max_pain_analysis = self.oi_analyzer.calculate_max_pain(strike_data, futures_price)
+        if max_pain_analysis['max_pain']:
+            logger.info(f"\n🎯 MAX PAIN ANALYSIS:")
+            logger.info(f"   Max Pain: {max_pain_analysis['max_pain']:.0f}")
+            logger.info(f"   Current: {futures_price:.2f}")
+            logger.info(f"   Distance: {max_pain_analysis['distance']:+.1f} pts")
+            logger.info(f"   Signal: {max_pain_analysis['signal'] or 'None'}")
+            logger.info(f"   Confidence: {max_pain_analysis['confidence']}%")
+            logger.info(f"   Reason: {max_pain_analysis['reason']}")
+        
+        # 🆕 V3.5: Gamma Wall Detection
+        gamma_analysis = self.oi_analyzer.detect_gamma_walls(
+            strike_data, 
+            futures_price, 
+            price_momentum=momentum
+        )
+        if gamma_analysis['nearest_wall']:
+            logger.info(f"\n⚡ GAMMA WALL ANALYSIS:")
+            logger.info(f"   Nearest Wall: {gamma_analysis['nearest_wall']['strike']} ({gamma_analysis['nearest_wall']['type']})")
+            logger.info(f"   Distance: {gamma_analysis['nearest_wall']['distance']:.1f} pts")
+            logger.info(f"   OI: {gamma_analysis['nearest_wall']['total_oi']:,.0f} (CE: {gamma_analysis['nearest_wall']['ce_oi']:,.0f}, PE: {gamma_analysis['nearest_wall']['pe_oi']:,.0f})")
+            logger.info(f"   Strength: {gamma_analysis['nearest_wall']['strength']}")
+            logger.info(f"   Signal: {gamma_analysis['signal'] or 'None'}")
+            logger.info(f"   Confidence: {gamma_analysis['confidence']}%")
+            logger.info(f"   Reason: {gamma_analysis['reason']}")
+        
         # VWAP with fallback
         vwap = self.technical_analyzer.calculate_vwap(
             futures_df, 
@@ -597,6 +633,38 @@ Quality > Quantity 💯
                 logger.info(f"⏸️  SIGNALS PAUSED - {oi_price_5m['scenario']} (unclear, waiting for clarity)")
                 return
             
+            # 🆕 V3.5: Confluence Detection (multiple confirmations!)
+            confluence_signals = []
+            confluence_confidence = 0
+            
+            # Check OI+Price
+            if oi_price_15m and oi_price_15m['signal']:
+                confluence_signals.append(f"OI+Price:{oi_price_15m['signal']}")
+                if oi_price_15m['confidence'] >= 80:
+                    confluence_confidence += 15
+            
+            # Check PCR Zone
+            if pcr_zone['signal'] and pcr_zone['confidence'] >= 70:
+                confluence_signals.append(f"PCR:{pcr_zone['signal']}")
+                confluence_confidence += 10
+            
+            # Check Max Pain
+            if max_pain_analysis['signal'] and max_pain_analysis['signal'] not in ['WAIT', None]:
+                confluence_signals.append(f"MaxPain:{max_pain_analysis['signal']}")
+                confluence_confidence += 10
+            
+            # Check Gamma Wall
+            if gamma_analysis['signal'] and gamma_analysis['signal'] not in ['WATCH_BREAKOUT', 'WATCH_BREAKDOWN', None]:
+                confluence_signals.append(f"Gamma:{gamma_analysis['signal']}")
+                confluence_confidence += 12
+            
+            # Log confluence
+            if len(confluence_signals) >= 2:
+                logger.info(f"\n🔥 CONFLUENCE DETECTED!")
+                logger.info(f"   Confirmations: {len(confluence_signals)}")
+                logger.info(f"   Signals: {', '.join(confluence_signals)}")
+                logger.info(f"   Confidence Boost: +{confluence_confidence}%")
+            
             # Generate signal with V3 features
             signal = self.signal_gen.generate(
                 spot_price=spot,
@@ -635,9 +703,19 @@ Quality > Quantity 💯
             )
             
             if signal:
-                logger.info(f"\n🎯 {signal['type']} SIGNAL GENERATED!")
-                logger.info(f"  Confidence: {signal['confidence']}%")
-                logger.info(f"  Reason: {signal['reason']}")
+                # 🆕 V3.5: Apply confluence boost
+                if confluence_confidence > 0:
+                    original_conf = signal['confidence']
+                    signal['confidence'] = min(95, signal['confidence'] + confluence_confidence)
+                    logger.info(f"\n🎯 {signal['type']} SIGNAL GENERATED!")
+                    logger.info(f"  Base Confidence: {original_conf}%")
+                    logger.info(f"  Confluence Boost: +{confluence_confidence}%")
+                    logger.info(f"  Final Confidence: {signal['confidence']}% 🔥")
+                    logger.info(f"  Reason: {signal['reason']}")
+                else:
+                    logger.info(f"\n🎯 {signal['type']} SIGNAL GENERATED!")
+                    logger.info(f"  Confidence: {signal['confidence']}%")
+                    logger.info(f"  Reason: {signal['reason']}")
                 
                 # Format and send alert
                 alert_msg = self.formatter.format_signal_alert(
